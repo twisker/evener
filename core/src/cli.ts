@@ -111,6 +111,45 @@ registerDispatch(commands);
 registerLifecycle(commands);
 registerReport(commands);
 
+/**
+ * `report` is implemented by a later task. Register a placeholder when the
+ * module is still a stub so `evener help` can advertise the reserved name.
+ */
+if (commands["report"] === undefined) {
+  commands["report"] = async () => {
+    throw new CommandError("not_implemented", "report is not implemented in this build");
+  };
+}
+
+/** One-line usage text for `evener help`, keyed by registered command name. */
+const commandUsages: Readonly<Record<string, string>> = {
+  init: "init [--force]",
+  policy: "policy validate|show|hash [--file F]",
+  task: "task create --description-file F [--files a,b] [--constraint c]* [--host H] [--host-session S] [--cwd DIR]",
+  status: "status --task T",
+  tasks: "tasks [--open] [--since 14d] [--host-session S]",
+  event: "event --type X --task T [--round N] --data JSON",
+  rebuild: "rebuild",
+  decide: "decide --task T [--dry-run]",
+  dispatch: "dispatch --task T --prompt-file F [--cwd DIR] [--target X] [--timeout-s N]",
+  done: "done --task T [--wall-ms N] [--cost-usd C] [--model M] [--status success|error] [--cwd DIR]",
+  accept:
+    "accept --task T --verdict accepted|rejected [--reason R] [--check name=result]* [--review pass|fail|skipped] [--reviewer-cost-usd C] [--reviewer-wall-ms W]",
+  next: "next --task T",
+  close: "close --task T --outcome accepted|handed_to_human|abandoned",
+  feedback: "feedback --task T --rating up|down [--comment TEXT]",
+  override: "override --task T --to X",
+  sweep: "sweep --host-session S",
+  report: "report [--since 14d|YYYY-MM-DD] [--by label] [--format md|json] [--out FILE]",
+  help: "help",
+};
+
+commands["help"] = async () => ({
+  commands: Object.keys(commands)
+    .sort()
+    .map((name) => ({ name, usage: commandUsages[name] ?? name })),
+});
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -151,7 +190,10 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
     return 1;
   }
 
-  const [command, ...commandArgs] = globals.rest;
+  const [first, ...rest] = globals.rest;
+  const isHelp = first === "--help" || first === "-h";
+  const command: string | undefined = isHelp ? "help" : first;
+  const commandArgs: string[] = isHelp ? [] : rest;
   if (command === undefined) {
     print(errorPayload("unknown_command", "no command given"));
     return 1;

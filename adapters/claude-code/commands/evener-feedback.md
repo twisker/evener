@@ -6,14 +6,14 @@ allowed-tools: Bash(evener *)
 The rating is `$1`; it must be `up` or `down`. If it is missing or anything else,
 ask the user for `up` or `down` and stop without running anything.
 
-Find the latest closed task for this Claude Code session:
+Find the latest closed task for this Claude Code session. Use the session id from
+the SessionStart hook context (`Evener: this Claude Code session id is <id>`):
 
 ```sh
-evener tasks --host-session "$SESSION_ID"
+evener tasks --host-session "<session id>"
 ```
 
-Use the session id you know for the current conversation (from the hook payload or
-host metadata). If you do not know it, run `evener tasks` instead and tell the user
+If you do not know the session id, run `evener tasks` instead and tell the user
 which task you selected. From the returned `{tasks: [...]}`, choose the row with
 `state` equal to `closed` and the greatest `created_ts`; use its `task_id` as
 `$TASK`. If there is no closed task, tell the user and stop.

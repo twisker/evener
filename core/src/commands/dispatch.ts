@@ -12,7 +12,7 @@ import {
   loadPricing,
   pricingVersion,
 } from "../config.js";
-import { DispatchError, runDispatch } from "../dispatch/index.js";
+import { DispatchError, recordHostRound, runDispatch } from "../dispatch/index.js";
 import type { DispatchResult } from "../dispatch/index.js";
 import type { Policy, Pricing } from "../types.js";
 import { nowIso } from "../util.js";
@@ -50,6 +50,22 @@ function parseTimeout(value: string | undefined): number | undefined {
     throw new CommandError("invalid_arguments", "--timeout-s must be a positive number");
   }
   return seconds;
+}
+
+function nonNegativeNumber(
+  value: string | undefined,
+  flag: string,
+  integer = false,
+): number | undefined {
+  if (value === undefined) return undefined;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0 || (integer && !Number.isInteger(number))) {
+    throw new CommandError(
+      "invalid_arguments",
+      `--${flag} must be a non-negative${integer ? " integer" : " number"}`,
+    );
+  }
+  return number;
 }
 
 async function cmdDispatch(ctx: CommandContext, argv: string[]): Promise<unknown> {
@@ -130,6 +146,65 @@ async function cmdDispatch(ctx: CommandContext, argv: string[]): Promise<unknown
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// done — record a host-executed round
+// ---------------------------------------------------------------------------
+
+async function cmdDone(ctx: CommandContext, argv: string[]): Promise<unknown> {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      task: { type: "string" },
+      "wall-ms": { type: "string" },
+      "cost-usd": { type: "string" },
+      model: { type: "string" },
+      status: { type: "string" },
+      cwd: { type: "string" },
+    },
+    allowPositionals: false,
+    strict: true,
+  });
+
+  const taskId = requiredOption(values, "task");
+  const wallMs = nonNegativeNumber(stringOption(values["wall-ms"]), "wall-ms", true);
+  const costUsd = nonNegativeNumber(stringOption(values["cost-usd"]), "cost-usd");
+  const statusRaw = stringOption(values["status"]) ?? "success";
+  if (statusRaw !== "success" && statusRaw !== "error") {
+    throw new CommandError("invalid_arguments", "--status must be success or error");
+  }
+  const model = stringOption(values["model"]) ?? null;
+
+  const store = ctx.store();
+  const task = store.getTask(taskId);
+  if (task === null) {
+    throw new CommandError("task_not_found", `task not found: ${taskId}`);
+  }
+
+  const { version } = loadDispatchPricing(ctx);
+  const cwdOption = stringOption(values["cwd"]);
+  const cwd = cwdOption === undefined ? ctx.io.cwd : resolve(ctx.io.cwd, cwdOption);
+
+  try {
+    return await recordHostRound({
+      store,
+      task,
+      cwd,
+      pricingVersion: version,
+      ...(wallMs === undefined ? {} : { wallMs }),
+      ...(costUsd === undefined ? {} : { costUsd }),
+      model,
+      status: statusRaw,
+      now: nowIso,
+    });
+  } catch (err) {
+    if (err instanceof DispatchError) {
+      throw new CommandError(err.code, err.message);
+    }
+    throw err;
+  }
+}
+
 export function register(commands: CommandRegistry): void {
   commands["dispatch"] = cmdDispatch;
+  commands["done"] = cmdDone;
 }

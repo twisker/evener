@@ -349,6 +349,14 @@ Budget: before spawning, if `tasks.total_cost_usd >= limits.max_cost_per_task_us
 
 The final message is written to `$EVENER_HOME/runs/<task>/<round>.out.md` and its path returned.
 
+`evener done --task T [--wall-ms N] [--cost-usd C] [--model M] [--status success|error] [--cwd DIR]`
+records a round the host executed itself: it appends `dispatch.started` with `target: host`,
+`target_version: null`, `context_bytes: 0` and `command: host`, then `dispatch.finished` with
+`status` defaulting to `success`, `wall_ms` defaulting to 0, all-zero usage, `usage_raw: {}`,
+`cost_unknown: true` when `--cost-usd` is absent, `diff_stats` from `git diff --numstat` in
+`--cwd`, and null `tool_calls` / `exit_code` / `target_session_id` / `output_path`. The task must
+be in state `routed` with `current_target: host`; host rounds never touch the circuit breaker.
+
 ## 8. Acceptance and next step
 
 `evener accept --task T --verdict V [--reason R] [--check name=result ...] [--review pass|fail|skipped] [--reviewer-cost-usd C] [--reviewer-wall-ms W]` emits `acceptance.finished`, sets state `awaiting_acceptance → accepted-pending-close` (we keep `awaiting_acceptance` and let `next` decide). `--reason` required when rejected.
@@ -404,6 +412,7 @@ All commands print one JSON object on stdout (or markdown for `report --format m
 | `task create --description-file F [--files a,b] [--constraint c]* [--host H] [--host-session S] [--cwd DIR]` | `{task_id, analysis_label, pre_features, policy_version, arm}` |
 | `decide --task T` | `{task_id, round, target, decided_by, rule_id, rationale, candidates, arm, locked}` |
 | `dispatch --task T --prompt-file F [--cwd DIR] [--target X] [--timeout-s N]` | `{task_id, round, target, status, wall_ms, usage, cost_usd, output_path, target_session_id, exit_code}` |
+| `done --task T [--wall-ms N] [--cost-usd C] [--model M] [--status success|error] [--cwd DIR]` | `{task_id, round, target, status, wall_ms, cost_usd}` |
 | `accept --task T --verdict V ...` | `{task_id, round, verdict}` |
 | `next --task T` | `{task_id, action, outcome?, kind?, next_target?, round?, why}` |
 | `close --task T --outcome O` | `{task_id, outcome, total_rounds, total_cost_usd, total_wall_ms}` |

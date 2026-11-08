@@ -1,8 +1,8 @@
 # Evener for Claude Code
 
 Claude Code plugin for [Evener](../../README.md). It adds the `/evener:evener` skill,
-two slash commands, `Stop`/`SubagentStop` cleanup hooks, and an `evener` launcher
-that puts the core CLI on the plugin's Bash PATH.
+two slash commands, a `SessionStart` session-id hook, `Stop`/`SubagentStop` cleanup
+hooks, and an `evener` launcher that puts the core CLI on the plugin's Bash PATH.
 
 ## Requirements
 
@@ -43,6 +43,8 @@ The skill is `/evener:evener` (also triggered by delegation language such as
 "route this", "delegate this", 路由, 委派, 用 evener). It records the sub-task,
 asks the routing policy for a target, dispatches to Codex CLI or DeepSeek Harness
 when selected, performs acceptance in the host session, and records the verdict.
+When the policy routes a round to `host`, the skill calls `evener done` after doing
+the work and before `evener accept`, so the host-executed round is recorded.
 
 Slash commands:
 
@@ -86,17 +88,28 @@ recorded. See `design/spec-v1.md` §5 for the full policy schema.
 
 ## Hooks
 
-`hooks/hooks.json` registers the same command for `Stop` and `SubagentStop`:
+`hooks/hooks.json` registers a `SessionStart` hook:
+
+```json
+{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/session-start.sh" }
+```
+
+It reads `session_id` from stdin JSON and prints a `hookSpecificOutput` object whose
+`additionalContext` tells the skill to pass `--host-session <id>` to `evener task
+create` and `evener tasks`. That id is what lets `evener done`, `evener sweep` and
+`/evener:evener-feedback` find the right session. Malformed input prints nothing.
+
+`Stop` and `SubagentStop` register the same `scripts/sweep.sh` command:
 
 ```json
 { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/sweep.sh" }
 ```
 
-The hook reads `session_id` and `stop_hook_active` from stdin JSON. Unless
+The sweep hook reads `session_id` and `stop_hook_active` from stdin JSON. Unless
 `stop_hook_active` is true, it runs
 `evener sweep --host-session <session_id>`, which closes that session's still-open
-tasks as `abandoned` with their accumulated totals. The hook never blocks the host:
-it discards stdout/stderr, ignores failures, and always exits 0. This is a safety
+tasks as `abandoned` with their accumulated totals. Both hooks never block the host:
+they discard stdout/stderr, ignore failures, and always exit 0. Sweeping is a safety
 net only; the skill should close tasks normally.
 
 ## Weekly report
@@ -120,5 +133,5 @@ claude --plugin-dir adapters/claude-code
 
 `npm test` from the repository root runs both the core suite and this adapter's
 self-test (`scripts/selftest.sh`). The self-test parses the manifests, checks the
-skill frontmatter, runs `bin/evener --help`, exercises `scripts/sweep.sh`, and
-runs `claude plugin validate` when `claude` is on PATH.
+skill frontmatter, runs `bin/evener help`, exercises `scripts/session-start.sh` and
+`scripts/sweep.sh`, and runs `claude plugin validate` when `claude` is on PATH.

@@ -716,3 +716,193 @@ test("dispatch CLI records an error for a missing API key without spawning", asy
   ]);
   assert.equal(status.payload.task.state, "awaiting_acceptance");
 });
+
+// ---------------------------------------------------------------------------
+// `evener done` CLI
+// ---------------------------------------------------------------------------
+
+async function createCliTask(home: string): Promise<string> {
+  const descriptionFile = join(home, "description.txt");
+  writeFileSync(descriptionFile, "Fix the crash", "utf8");
+  const created = await runJson<{ task_id: string }>([
+    "task",
+    "create",
+    "--home",
+    home,
+    "--description-file",
+    descriptionFile,
+    "--host-session",
+    "session-1",
+    "--cwd",
+    home,
+  ]);
+  assert.equal(created.code, 0);
+  return created.payload.task_id;
+}
+
+async function routeCliTask(home: string, taskId: string, target: string): Promise<void> {
+  const route = {
+    target,
+    candidates: [{ target, score: 1 }],
+    rationale: `test route to ${target}`,
+    decided_by: "fallback",
+    rule_id: null,
+    classifier_model: null,
+    classifier_latency_ms: null,
+    classifier_cost_usd: null,
+    arm: null,
+    escalated_from: null,
+  };
+  const routed = await runJson<{ event_id: string }>([
+    "event",
+    "--home",
+    home,
+    "--type",
+    "route.decided",
+    "--task",
+    taskId,
+    "--data",
+    JSON.stringify(route),
+  ]);
+  assert.equal(routed.code, 0);
+}
+
+test("done records a host round with zero usage and unknown cost", async (t) => {
+  const home = mkdtempSync(join(tmpdir(), "evener-done-cli-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+
+  assert.equal((await runJson<{ db_path: string }>(["init", "--home", home])).code, 0);
+  const taskId = await createCliTask(home);
+  await routeCliTask(home, taskId, "host");
+
+  const done = await runJson<{
+    task_id: string;
+    round: number;
+    target: string;
+    status: string;
+    wall_ms: number;
+    cost_usd: number;
+  }>(["done", "--home", home, "--task", taskId, "--cwd", home]);
+
+  assert.equal(done.code, 0);
+  assert.deepEqual(done.payload, {
+    task_id: taskId,
+    round: 1,
+    target: "host",
+    status: "success",
+    wall_ms: 0,
+    cost_usd: 0,
+  });
+
+  const status = await runJson<{ task: TaskRow; events: EvenerEvent[] }>([
+    "status",
+    "--home",
+    home,
+    "--task",
+    taskId,
+  ]);
+  assert.equal(status.payload.task.state, "awaiting_acceptance");
+  assert.equal(status.payload.task.total_cost_usd, 0);
+  assert.equal(status.payload.task.total_wall_ms, 0);
+
+  const started = status.payload.events.find((event) => event.type === "dispatch.started");
+  assert.ok(started !== undefined && started.type === "dispatch.started");
+  assert.equal(started.data.target, "host");
+  assert.equal(started.data.target_version, null);
+  assert.equal(started.data.model, null);
+  assert.equal(started.data.context_bytes, 0);
+  assert.equal(started.data.command, "host");
+
+  const finished = status.payload.events.find((event) => event.type === "dispatch.finished");
+  assert.ok(finished !== undefined && finished.type === "dispatch.finished");
+  assert.deepEqual(finished.data.usage, { input: 0, cached_input: 0, output: 0, reasoning: 0 });
+  assert.deepEqual(finished.data.usage_raw, {});
+  assert.equal(finished.data.cost_usd, 0);
+  assert.equal(
+    (finished.data as typeof finished.data & { cost_unknown: boolean }).cost_unknown,
+    true,
+  );
+  assert.equal(finished.data.tool_calls, null);
+  assert.equal(finished.data.exit_code, null);
+  assert.equal(finished.data.target_session_id, null);
+  assert.equal(finished.data.output_path, null);
+
+  const accepted = await runJson<{ verdict: string }>([
+    "accept",
+    "--home",
+    home,
+    "--task",
+    taskId,
+    "--verdict",
+    "accepted",
+  ]);
+  assert.equal(accepted.code, 0);
+  assert.equal(accepted.payload.verdict, "accepted");
+});
+
+test("done records a supplied cost and marks it known", async (t) => {
+  const home = mkdtempSync(join(tmpdir(), "evener-done-cli-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+
+  assert.equal((await runJson<{ db_path: string }>(["init", "--home", home])).code, 0);
+  const taskId = await createCliTask(home);
+  await routeCliTask(home, taskId, "host");
+
+  const done = await runJson<{ cost_usd: number; wall_ms: number; status: string }>([
+    "done",
+    "--home",
+    home,
+    "--task",
+    taskId,
+    "--wall-ms",
+    "1234",
+    "--cost-usd",
+    "0.25",
+    "--model",
+    "claude-sonnet",
+    "--status",
+    "error",
+    "--cwd",
+    home,
+  ]);
+  assert.equal(done.code, 0);
+  assert.equal(done.payload.cost_usd, 0.25);
+  assert.equal(done.payload.wall_ms, 1234);
+  assert.equal(done.payload.status, "error");
+
+  const status = await runJson<{ events: EvenerEvent[] }>([
+    "status",
+    "--home",
+    home,
+    "--task",
+    taskId,
+  ]);
+  const finished = status.payload.events.find((event) => event.type === "dispatch.finished");
+  assert.ok(finished !== undefined && finished.type === "dispatch.finished");
+  assert.equal(
+    (finished.data as typeof finished.data & { cost_unknown: boolean }).cost_unknown,
+    false,
+  );
+  assert.equal(status.payload.events.some((event) => event.type === "target.circuit"), false);
+});
+
+test("done rejects a codex-routed task with not_host_round", async (t) => {
+  const home = mkdtempSync(join(tmpdir(), "evener-done-cli-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+
+  assert.equal((await runJson<{ db_path: string }>(["init", "--home", home])).code, 0);
+  const taskId = await createCliTask(home);
+  await routeCliTask(home, taskId, "codex");
+
+  const done = await runJson<{ error: { code: string } }>([
+    "done",
+    "--home",
+    home,
+    "--task",
+    taskId,
+    "--cwd",
+    home,
+  ]);
+  assert.equal(done.code, 1);
+  assert.equal(done.payload.error.code, "not_host_round");
+});

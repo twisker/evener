@@ -125,3 +125,19 @@ test("unknown command returns exit 1 and error JSON", async () => {
   assert.equal(payload.error.code, "unknown_command");
   assert.ok(payload.error.message.length > 0);
 });
+
+test("help lists registered commands with usage for help, --help and -h", async () => {
+  for (const argv of [["help"], ["--help"], ["-h"]]) {
+    const result = harness();
+    assert.equal(await runCli(argv, result.io), 0);
+
+    const payload = JSON.parse(result.stdout()) as {
+      commands: { name: string; usage: string }[];
+    };
+    const names = payload.commands.map((command) => command.name);
+    for (const name of ["decide", "dispatch", "done", "report"]) {
+      assert.ok(names.includes(name), `help is missing ${name}`);
+    }
+    assert.ok(payload.commands.every((command) => command.usage.length > 0));
+  }
+});

@@ -1,56 +1,29 @@
 #!/usr/bin/env node
-import { copyFileSync, existsSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "node:util";
-import {
-  ConfigError,
-  defaultPolicy,
-  loadEffectivePolicy,
-  loadPolicy,
-  policyTemplatePath,
-  policyVersion,
-  pricingTemplatePath,
-  resolveHome,
-  validatePolicy,
-  validatePolicyFile,
-} from "./config.js";
-import type { PolicyValidationResult } from "./config.js";
-import type { Policy } from "./types.js";
-import { ensureDir } from "./util.js";
+import { ConfigError, resolveHome } from "./config.js";
+import { openStore } from "./store.js";
+import type { Store } from "./store.js";
+import { CommandError } from "./commands/types.js";
+import type { CliIO, CommandContext, CommandHandler, CommandRegistry } from "./commands/types.js";
+import { register as registerPolicy } from "./commands/policy.js";
+import { register as registerTask } from "./commands/task.js";
+import { register as registerRouter } from "./commands/router.js";
+import { register as registerDispatch } from "./commands/dispatch.js";
+import { register as registerLifecycle } from "./commands/lifecycle.js";
+import { register as registerReport } from "./commands/report.js";
+
+export type { CliIO, CliSink, CommandHandler, CommandRegistry } from "./commands/types.js";
+export { CommandError as CliError } from "./commands/types.js";
 
 // ---------------------------------------------------------------------------
-// IO / context
+// IO / output
 // ---------------------------------------------------------------------------
-
-export type CliSink =
-  | ((text: string) => void)
-  | {
-      write(chunk: string): unknown;
-    };
-
-export interface CliIO {
-  stdout: CliSink;
-  stderr: CliSink;
-  env: Readonly<Record<string, string | undefined>>;
-  cwd: string;
-}
 
 export type OutputFormat = "json" | "md";
 
-export interface CliContext {
-  home: string;
-  format: OutputFormat;
-  quiet: boolean;
-  cwd: string;
-  env: Readonly<Record<string, string | undefined>>;
-  io: CliIO;
-  print(value: unknown): void;
-}
-
-export type CommandHandler = (ctx: CliContext, argv: string[]) => Promise<unknown>;
-
-function emitText(sink: CliSink, text: string): void {
+function emitText(sink: CliIO["stdout"], text: string): void {
   if (typeof sink === "function") {
     sink(text);
   } else {
@@ -62,21 +35,6 @@ function renderOutput(value: unknown, format: OutputFormat): string {
   const json = JSON.stringify(value, null, 2) ?? "null";
   if (format === "md") return `\`\`\`json\n${json}\n\`\`\`\n`;
   return `${json}\n`;
-}
-
-/** Command failures that carry their own machine-readable output and exit code. */
-export class CliError extends Error {
-  readonly code: string;
-  readonly exitCode: number;
-  readonly payload: unknown;
-
-  constructor(code: string, message: string, opts: { exitCode?: number; payload?: unknown } = {}) {
-    super(message);
-    this.name = "CliError";
-    this.code = code;
-    this.exitCode = opts.exitCode ?? 1;
-    this.payload = opts.payload;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -142,119 +100,16 @@ function errorPayload(code: string, message: string): { error: { code: string; m
 }
 
 // ---------------------------------------------------------------------------
-// Commands
+// Command registry
 // ---------------------------------------------------------------------------
 
-async function cmdInit(ctx: CliContext, argv: string[]): Promise<unknown> {
-  const { values } = parseArgs({
-    args: argv,
-    options: {
-      force: { type: "boolean", default: false },
-    },
-    allowPositionals: false,
-    strict: true,
-  });
-
-  const home = ctx.home;
-  const policyPath = join(home, "policy.yaml");
-  const pricingPath = join(home, "pricing.yaml");
-  const dbPath = join(home, "evener.sqlite");
-
-  ensureDir(home);
-  ensureDir(join(home, "runs"));
-  ensureDir(join(home, "reports"));
-
-  const force = values["force"] === true;
-  let created = false;
-
-  if (force || !existsSync(policyPath)) {
-    copyFileSync(policyTemplatePath(), policyPath);
-    created = true;
-  }
-  if (force || !existsSync(pricingPath)) {
-    copyFileSync(pricingTemplatePath(), pricingPath);
-    created = true;
-  }
-
-  return {
-    home,
-    policy_path: policyPath,
-    pricing_path: pricingPath,
-    db_path: dbPath,
-    created,
-  };
-}
-
-function policyForCommand(ctx: CliContext, file: string | undefined): Policy {
-  if (file !== undefined) return loadPolicy(file);
-  const homePolicy = join(ctx.home, "policy.yaml");
-  if (existsSync(homePolicy)) return loadEffectivePolicy(ctx.home).policy;
-  return defaultPolicy();
-}
-
-async function cmdPolicyValidate(ctx: CliContext, argv: string[]): Promise<unknown> {
-  const { values } = parseArgs({
-    args: argv,
-    options: { file: { type: "string" } },
-    allowPositionals: false,
-    strict: true,
-  });
-
-  let result: PolicyValidationResult;
-  if (values["file"] !== undefined) {
-    result = validatePolicyFile(values["file"]);
-  } else {
-    const homePolicy = join(ctx.home, "policy.yaml");
-    result = existsSync(homePolicy) ? validatePolicyFile(homePolicy) : validatePolicy(defaultPolicy());
-  }
-
-  const payload = { ok: result.ok, errors: result.errors, warnings: result.warnings };
-  if (!result.ok) {
-    throw new CliError("validation_failed", "policy validation failed", {
-      exitCode: 2,
-      payload,
-    });
-  }
-  return payload;
-}
-
-async function cmdPolicyShow(ctx: CliContext, argv: string[]): Promise<unknown> {
-  const { values } = parseArgs({
-    args: argv,
-    options: { file: { type: "string" } },
-    allowPositionals: false,
-    strict: true,
-  });
-  return policyForCommand(ctx, values["file"]);
-}
-
-async function cmdPolicyHash(ctx: CliContext, argv: string[]): Promise<unknown> {
-  const { values } = parseArgs({
-    args: argv,
-    options: { file: { type: "string" } },
-    allowPositionals: false,
-    strict: true,
-  });
-  const policy = policyForCommand(ctx, values["file"]);
-  return { policy_version: policyVersion(policy) };
-}
-
-async function cmdPolicy(ctx: CliContext, argv: string[]): Promise<unknown> {
-  const [subcommand, ...rest] = argv;
-  if (subcommand === "validate") return cmdPolicyValidate(ctx, rest);
-  if (subcommand === "show") return cmdPolicyShow(ctx, rest);
-  if (subcommand === "hash") return cmdPolicyHash(ctx, rest);
-  throw new CliError("unknown_command", subcommand === undefined ? "policy requires a subcommand" : `unknown policy command: ${subcommand}`);
-}
-
-// ---------------------------------------------------------------------------
-// Command registry — later tasks add their commands here.
-// ---------------------------------------------------------------------------
-
-export const commands: Record<string, CommandHandler> = {
-  init: cmdInit,
-  policy: cmdPolicy,
-};
+export const commands: CommandRegistry = {};
+registerPolicy(commands);
+registerTask(commands);
+registerRouter(commands);
+registerDispatch(commands);
+registerLifecycle(commands);
+registerReport(commands);
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -268,19 +123,27 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
   const globals = extractGlobalOptions(argv);
   const format = globals.options.format;
   const home = resolveHome({ home: globals.options.home, env: io.env });
+  const policyPath = join(home, "policy.yaml");
+  const pricingPath = join(home, "pricing.yaml");
+  const dbPath = join(home, "evener.sqlite");
 
   const print = (value: unknown): void => {
     emitText(io.stdout, renderOutput(value, format));
   };
 
-  const ctx: CliContext = {
+  let store: Store | undefined;
+  const getStore = (): Store => {
+    store ??= openStore(dbPath);
+    return store;
+  };
+
+  const ctx: CommandContext = {
     home,
-    format,
-    quiet: globals.options.quiet,
-    cwd: io.cwd,
-    env: io.env,
+    policyPath,
+    pricingPath,
+    dbPath,
+    store: getStore,
     io,
-    print,
   };
 
   if (globals.error !== undefined) {
@@ -294,7 +157,7 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
     return 1;
   }
 
-  const handler = commands[command];
+  const handler: CommandHandler | undefined = commands[command];
   if (handler === undefined) {
     print(errorPayload("unknown_command", `unknown command: ${command}`));
     return 1;
@@ -302,10 +165,10 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
 
   try {
     const output = await handler(ctx, commandArgs);
-    if (!ctx.quiet && output !== undefined) print(output);
+    if (!globals.options.quiet && output !== undefined) print(output);
     return 0;
   } catch (err) {
-    if (err instanceof CliError) {
+    if (err instanceof CommandError) {
       print(err.payload ?? errorPayload(err.code, err.message));
       return err.exitCode;
     }
@@ -327,6 +190,8 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
     const message = err instanceof Error ? err.message : String(err);
     print(errorPayload("internal_error", message));
     return 1;
+  } finally {
+    store?.close();
   }
 }
 

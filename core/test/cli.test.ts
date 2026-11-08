@@ -63,7 +63,7 @@ test("init creates the home, configs and run directories, then is idempotent", a
   assert.equal(existsSync(join(home, "pricing.yaml")), true);
   assert.equal(statSync(join(home, "runs")).isDirectory(), true);
   assert.equal(statSync(join(home, "reports")).isDirectory(), true);
-  assert.equal(existsSync(join(home, "evener.sqlite")), false);
+  assert.equal(existsSync(join(home, "evener.sqlite")), true);
 
   const second = harness();
   assert.equal(await runCli(["init", "--home", home], second.io), 0);

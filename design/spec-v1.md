@@ -106,6 +106,7 @@ task.created:
   analysis_label: bugfix|feature|refactor|test|docs|mechanical|question|unknown
   labeler_model: string              # "heuristic" or model id
   constraints: [string]              # free-form tags from host, e.g. private_path
+  arm: string|null                   # experiment arm assigned at creation
 
 route.decided:
   target: string                      # a key in policy.targets

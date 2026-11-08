@@ -4,10 +4,10 @@
 > 定位:面向编码 agent 委派的可观测性 + 策略评估/优化层,路由是执行手段。
 > 第一版 host:Claude Code。目标 harness:Codex CLI、DeepSeek Harness(dsh)。纯本地存储,开源。
 
-## 0. 已核实的外部事实
+## 0. 已核实的外部事实(2026-11-09 spike 完成,详见 `design/spec-v1.md` §1)
 
-- Codex:`codex exec --json` 输出 JSONL 事件流;usage 在 `turn.completed.usage`(input/cached_input/output/reasoning_output)。**待确认**:usage 是单轮还是线程累计。`-o` 写最终消息到文件;`--output-schema` 可要求结构化输出。
-- dsh(@deepseek-ai/dsh 0.2.2-rc.1):`dsh --profile headless "task"` 一次性执行,最后一条回复打到 stdout,成功时 stderr 为空,**不输出 usage**。usage 候选来源:`--profile sdk` 的 JSON-RPC stdio,或持久化 session 文件。**待 spike**。rc 阶段,明示会有破坏性变更,适配器标高维护。
+- Codex:`codex exec --json` 输出 JSONL 事件流;usage 在 `turn.completed.usage`(input/cached_input/cache_write_input/output/reasoning_output)。**已确认:usage 是线程累计值**(resume 后 output_tokens 5→11)。每轮新开线程则等于单轮;resume 需做差。`-o` 写最终消息到文件;`--output-schema` 可要求结构化输出。
+- dsh(@deepseek-ai/dsh 0.2.2-rc.1):`dsh --profile headless --json` 输出 JSONL;**`status.step_end` 事件带每步 usage**(inputTokens/outputTokens/cacheReadTokens/cacheWriteTokens),求和即单次运行用量。非 JSON 模式才没有 usage。`final` 事件带最终文本与 reason.kind。rc 阶段,适配器标高维护。
 
 ## 1. 已定决策
 
@@ -227,9 +227,10 @@ style 驳回占某目标总驳回 >50% 时标"疑似评审偏好",不扣分。
 - 分类结果与路由模型选择无关(日志记 router_model 备查)
 - 验收开销占比可控(<20%)
 - 随机交错下无需稳态假设
-- Codex usage 单轮 vs 累计;dsh usage 可从 sdk 接口或 session 文件获取
 
-## 11. 待办 spike
+## 11. 待办 spike(已完成 2026-11-09)
 
-1. 本机跑 `codex exec --json`,确认 usage 语义
-2. 跑 `dsh --profile sdk`,抓 JSON-RPC 事件,找 usage;或定位 session 文件
+1. ~~本机跑 `codex exec --json`,确认 usage 语义~~ → 线程累计
+2. ~~找 dsh usage~~ → `headless --json` 的 `step_end.usage`,无需 sdk profile
+
+实现规格见 `design/spec-v1.md`;留给用户的决定见 `design/decisions-for-user.md`。

@@ -27,7 +27,10 @@ Frontier closed models are expensive. Cheaper models are good enough for a large
 
 ## Status
 
-Design stage. See [`design/prd-draft.md`](design/prd-draft.md) for the current PRD and open questions.
+v1 under construction. [`design/spec-v1.md`](design/spec-v1.md) is the frozen implementation
+contract; [`design/prd-draft.md`](design/prd-draft.md) holds the motivation and history;
+[`design/decisions-for-user.md`](design/decisions-for-user.md) lists defaults the maintainer should
+confirm. Implementation work is delegated to coding agents from the briefs in `design/tasks/`.
 
 Planned v1 scope:
 

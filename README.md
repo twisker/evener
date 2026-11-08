@@ -27,26 +27,84 @@ Frontier closed models are expensive. Cheaper models are good enough for a large
 
 ## Status
 
-v1 under construction. [`design/spec-v1.md`](design/spec-v1.md) is the frozen implementation
-contract; [`design/prd-draft.md`](design/prd-draft.md) holds the motivation and history;
-[`design/decisions-for-user.md`](design/decisions-for-user.md) lists defaults the maintainer should
-confirm. Implementation work is delegated to coding agents from the briefs in `design/tasks/`.
+v1 is implemented and locally verified (2026-11-09): both target adapters were exercised against the
+real `codex` and `dsh` CLIs, and the full flow (create → decide → dispatch → accept → next → close →
+report) runs end to end. Model prices and a few defaults still need the maintainer's confirmation; see
+[`design/decisions-for-user.md`](design/decisions-for-user.md).
 
-Planned v1 scope:
+- [`design/spec-v1.md`](design/spec-v1.md) — the frozen implementation contract (schemas, CLI, algorithms)
+- [`design/prd-draft.md`](design/prd-draft.md) — motivation and history
+- [`design/tasks/`](design/tasks/) — the briefs the implementation was delegated from
 
-| Role | Tool |
-|---|---|
-| Host | Claude Code |
-| Targets | Codex CLI (`codex exec --json`), DeepSeek Harness (`npx @deepseek-ai/dsh`) |
-| Classifier | Jev or any OpenAI-compatible model |
-| Storage | SQLite, local only |
+## Install
 
-## Repository layout (planned)
+Requirements: Node ≥ 22.13 (for `node:sqlite`), plus the targets you want to route to
+(`codex` on PATH with `OPENAI_API_KEY`, and/or `DEEPSEEK_API_KEY` for `npx @deepseek-ai/dsh`).
+
+```sh
+git clone https://github.com/twisker/evener && cd evener
+npm install && npm run build && npm test
+node core/dist/src/cli.js init          # creates ~/.evener/{policy.yaml,pricing.yaml,evener.sqlite}
+```
+
+Claude Code plugin (local checkout):
+
+```sh
+claude --plugin-dir ./adapters/claude-code          # session-only
+# or, as a marketplace:
+claude plugin marketplace add ./                     # repo root holds .claude-plugin/marketplace.json
+claude plugin install evener@evener
+```
+
+The plugin puts `evener` on the Bash PATH of the session, adds the `/evener:evener` skill, the
+`/evener:evener-report` and `/evener:evener-feedback` commands, a SessionStart hook that tells Claude
+the session id, and Stop / SubagentStop hooks that close orphaned tasks as `abandoned`.
+
+## How a task flows
 
 ```
-design/     PRD, decisions, schemas
-core/       host-independent routing engine, store, report  (CLI + library)
-adapters/   thin per-host packages for marketplace packaging (claude-code/ first)
+evener task create --description-file F --files a.ts,b.ts --host-session S --cwd .
+evener decide   --task T                 # rules → classifier → fallback table
+evener dispatch --task T --prompt-file P --cwd .     # codex / dsh; host rounds use `evener done`
+evener accept   --task T --verdict accepted|rejected [--reason <enum>] --check tests=pass
+evener next     --task T                 # close | redispatch (retry / escalate) | hand_to_human
+evener close    --task T --outcome accepted
+evener report   --since 14d --format md  # CPAT, quality, 性价比, strata, MDD, ≤3 suggestions
+evener apply 1                           # apply suggestion 1 to policy.yaml
+```
+
+Every command prints one JSON object (the report can print Markdown). Acceptance (tests, lint, diff
+review, scope check) is done by the host; Evener only records the verdict and decides what happens next.
+
+## Configuration
+
+Everything lives in `$EVENER_HOME` (default `~/.evener`):
+
+| File | Purpose |
+|---|---|
+| `policy.yaml` | targets and their commands, hard rules, fallback table, soft preferences, escalation chain, limits, privacy, experiment arms |
+| `pricing.yaml` | USD per million tokens per model id; `price_table_version` is its hash |
+| `evener.sqlite` | append-only `events` plus a rebuildable `tasks` projection (WAL) |
+| `runs/<task>/<round>.out.md` | the target's final message; `.stderr` next to it |
+| `reports/<ts>.json` | saved reports, the source for `evener apply` |
+
+Set `classifier.model` (any OpenAI-compatible endpoint; key via `api_key_env`) to let a cheap model
+apply the policy; leave it `null` to route with rules and the fallback table only. Set
+`experiment.mode: interleave` and two arm files to A/B-compare policies.
+
+## Repository layout
+
+```
+design/                 PRD, frozen spec, deferred decisions, task briefs
+core/                   npm package `evener`: CLI + library (TypeScript, Node built-ins + `yaml`)
+adapters/claude-code/   Claude Code plugin: manifest, skill, hooks, commands, launcher
+.claude-plugin/         marketplace.json for `claude plugin marketplace add`
+```
+
+Weekly report via cron:
+
+```
+0 9 * * 1  cd ~ && evener report --since 7d --format md --out ~/.evener/reports/weekly-$(date +\%F).md
 ```
 
 ## License

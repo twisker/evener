@@ -323,6 +323,62 @@ function reportFor(store: Store, policy = experimentPolicy(), pricing: Pricing =
   });
 }
 
+let attributionEventSeq = 0;
+
+function appendTaskEvent<K extends EventType>(
+  store: Store,
+  task: TaskRow,
+  type: K,
+  round: number,
+  ts: string,
+  data: PayloadByType[K],
+): void {
+  attributionEventSeq += 1;
+  store.appendEvent({
+    event_id: `attribution-event-${attributionEventSeq}`,
+    task_id: task.task_id,
+    round,
+    ts,
+    type,
+    host: task.host,
+    host_session_id: task.host_session_id,
+    policy_version: task.policy_version,
+    schema_version: 1,
+    data,
+  } as unknown as EvenerEvent);
+}
+
+function createAttributionTask(store: Store, taskId: string, label: Label): TaskRow {
+  store.appendEvent({
+    event_id: `attribution-created-${taskId}`,
+    task_id: taskId,
+    round: 1,
+    ts: new Date(T0).toISOString(),
+    type: "task.created",
+    host: "claude-code",
+    host_session_id: null,
+    policy_version: "attribution00",
+    schema_version: 1,
+    data: {
+      description_hash: `hash-${taskId}`,
+      description_excerpt: null,
+      repo_fingerprint: null,
+      pre_features: { description_chars: 20, files_mentioned: 1, repo_files: null },
+      analysis_label: label,
+      labeler_model: "heuristic",
+      constraints: [],
+      arm: "A",
+    },
+  } as unknown as EvenerEvent);
+  const task = store.getTask(taskId);
+  assert.ok(task !== null, `created task ${taskId} missing`);
+  return task;
+}
+
+function at(seconds: number): string {
+  return new Date(T0 + seconds * 1000).toISOString();
+}
+
 // ---------------------------------------------------------------------------
 // Report structure and metrics
 // ---------------------------------------------------------------------------
@@ -432,6 +488,204 @@ test("style suspicion triggers when style is at least half of a target's rejecti
   assert.equal(codex.style_suspected, true);
   assert.ok((codex.style_ratio ?? 0) >= 0.5);
   assert.ok(report.alerts.some((alert) => alert.code === "style_suspicion"));
+});
+
+test("override before dispatch attributes the round to the dispatched target", (t) => {
+  const { store } = tempStore(t);
+  const task = createAttributionTask(store, "task-overridden", "mechanical");
+
+  appendTaskEvent(store, task, "route.decided", 1, at(1), {
+    target: "codex",
+    candidates: [{ target: "codex", score: 1 }],
+    rationale: "test",
+    decided_by: "fallback",
+    rule_id: null,
+    classifier_model: null,
+    classifier_latency_ms: 10,
+    classifier_cost_usd: 0,
+    arm: "A",
+    escalated_from: null,
+  });
+  appendTaskEvent(store, task, "user.override", 1, at(2), {
+    from: "codex",
+    to: "dsh",
+  });
+  appendTaskEvent(store, task, "dispatch.started", 1, at(3), {
+    target: "dsh",
+    target_version: null,
+    model: null,
+    context_bytes: 10,
+    command: "dsh --profile headless --json",
+  });
+  appendTaskEvent(store, task, "dispatch.finished", 1, at(4), {
+    status: "success",
+    wall_ms: 1234,
+    usage: { input: 10, cached_input: 0, output: 5, reasoning: 0 },
+    usage_raw: {},
+    cost_usd: 0.25,
+    price_table_version: "testpricing",
+    diff_stats: null,
+    tool_calls: null,
+    exit_code: 0,
+    target_session_id: null,
+    output_path: null,
+  });
+  appendTaskEvent(store, task, "acceptance.finished", 1, at(5), {
+    verdict: "accepted",
+    checks: [],
+    review_verdict: "skipped",
+    reject_reason: null,
+    reviewer_cost_usd: 0.05,
+    reviewer_wall_ms: 10,
+  });
+  appendTaskEvent(store, task, "task.closed", 1, at(6), {
+    outcome: "accepted",
+    total_rounds: 1,
+    total_cost_usd: 0.3,
+    total_wall_ms: 1244,
+  });
+
+  const report = reportFor(store);
+  const dsh = report.targets.find((target) => target.target === "dsh");
+  const codex = report.targets.find((target) => target.target === "codex");
+  assert.ok(dsh !== undefined);
+  assert.ok(codex !== undefined);
+
+  assert.equal(dsh.n, 1);
+  assert.equal(dsh.dispatches, 1);
+  assert.equal(dsh.accepted, 1);
+  assert.equal(dsh.first_pass_rate, 1);
+  assert.equal(dsh.final_pass_rate, 1);
+  assert.ok(Math.abs((dsh.mean_cost_usd ?? 0) - 0.3) < 1e-12);
+  assert.equal(dsh.mean_wall_ms, 1234);
+
+  assert.equal(codex.n, 0);
+  assert.equal(codex.dispatches, 0);
+  assert.equal(codex.accepted, 0);
+  assert.equal(codex.mean_cost_usd, null);
+  assert.equal(codex.first_pass_rate, null);
+  assert.equal(codex.final_pass_rate, null);
+});
+
+test("multi-round task attributes each round to its dispatched target", (t) => {
+  const { store } = tempStore(t);
+  const task = createAttributionTask(store, "task-escalated", "bugfix");
+
+  appendTaskEvent(store, task, "route.decided", 1, at(1), {
+    target: "dsh",
+    candidates: [{ target: "dsh", score: 1 }],
+    rationale: "test",
+    decided_by: "fallback",
+    rule_id: null,
+    classifier_model: null,
+    classifier_latency_ms: 10,
+    classifier_cost_usd: 0,
+    arm: "A",
+    escalated_from: null,
+  });
+  appendTaskEvent(store, task, "dispatch.started", 1, at(2), {
+    target: "dsh",
+    target_version: null,
+    model: null,
+    context_bytes: 10,
+    command: "dsh --profile headless --json",
+  });
+  appendTaskEvent(store, task, "dispatch.finished", 1, at(3), {
+    status: "success",
+    wall_ms: 100,
+    usage: { input: 10, cached_input: 0, output: 5, reasoning: 0 },
+    usage_raw: {},
+    cost_usd: 0.1,
+    price_table_version: "testpricing",
+    diff_stats: null,
+    tool_calls: null,
+    exit_code: 0,
+    target_session_id: null,
+    output_path: null,
+  });
+  appendTaskEvent(store, task, "acceptance.finished", 1, at(4), {
+    verdict: "rejected",
+    checks: [],
+    review_verdict: "skipped",
+    reject_reason: "tests_failed",
+    reviewer_cost_usd: 0.01,
+    reviewer_wall_ms: 5,
+  });
+  appendTaskEvent(store, task, "task.redispatch", 2, at(5), {
+    reason: "tests_failed",
+    context_delta: "unchanged",
+    next_target: "codex",
+    kind: "escalate",
+  });
+  appendTaskEvent(store, task, "route.decided", 2, at(6), {
+    target: "codex",
+    candidates: [{ target: "codex", score: 1 }],
+    rationale: "test",
+    decided_by: "fallback",
+    rule_id: null,
+    classifier_model: null,
+    classifier_latency_ms: 20,
+    classifier_cost_usd: 0,
+    arm: "A",
+    escalated_from: "dsh",
+  });
+  appendTaskEvent(store, task, "dispatch.started", 2, at(7), {
+    target: "codex",
+    target_version: null,
+    model: null,
+    context_bytes: 10,
+    command: "codex exec --json",
+  });
+  appendTaskEvent(store, task, "dispatch.finished", 2, at(8), {
+    status: "success",
+    wall_ms: 200,
+    usage: { input: 10, cached_input: 0, output: 5, reasoning: 0 },
+    usage_raw: {},
+    cost_usd: 0.2,
+    price_table_version: "testpricing",
+    diff_stats: null,
+    tool_calls: null,
+    exit_code: 0,
+    target_session_id: null,
+    output_path: null,
+  });
+  appendTaskEvent(store, task, "acceptance.finished", 2, at(9), {
+    verdict: "accepted",
+    checks: [],
+    review_verdict: "skipped",
+    reject_reason: null,
+    reviewer_cost_usd: 0.02,
+    reviewer_wall_ms: 5,
+  });
+  appendTaskEvent(store, task, "task.closed", 2, at(10), {
+    outcome: "accepted",
+    total_rounds: 2,
+    total_cost_usd: 0.33,
+    total_wall_ms: 310,
+  });
+
+  const report = reportFor(store);
+  const dsh = report.targets.find((target) => target.target === "dsh");
+  const codex = report.targets.find((target) => target.target === "codex");
+  assert.ok(dsh !== undefined);
+  assert.ok(codex !== undefined);
+
+  assert.equal(dsh.n, 1);
+  assert.equal(dsh.dispatches, 1);
+  assert.equal(dsh.accepted, 0);
+  assert.equal(dsh.first_pass_rate, 0);
+  assert.equal(dsh.final_pass_rate, null);
+  assert.equal(dsh.reject_reasons.tests_failed, 1);
+  assert.ok(Math.abs((dsh.mean_cost_usd ?? 0) - 0.11) < 1e-12);
+
+  assert.equal(codex.n, 1);
+  assert.equal(codex.dispatches, 1);
+  assert.equal(codex.accepted, 1);
+  assert.equal(codex.first_pass_rate, null);
+  assert.equal(codex.final_pass_rate, 1);
+  assert.equal(codex.rejections, 0);
+  assert.ok(Math.abs((codex.mean_cost_usd ?? 0) - 0.22) < 1e-12);
+  assert.ok(Math.abs((codex.cpat ?? 0) - 0.22) < 1e-12);
 });
 
 test("acceptance overhead alerts fire for expensive reviews", (t) => {

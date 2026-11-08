@@ -60,6 +60,32 @@ test("has_repro enumerates every signal, including Chinese and fenced errors", (
   assert.equal(hasRepro("Error: no fence"), false);
 });
 
+test("has_repro ignores signals negated in the same-line context", () => {
+  assert.equal(hasRepro("No reproduction yet, stack trace unavailable"), false);
+  assert.equal(hasRepro("Steps to reproduce: run x"), true);
+  assert.equal(hasRepro("复现步骤：…"), true);
+  assert.equal(hasRepro("没有复现步骤"), false);
+});
+
+test("files_mentioned is the union of --files and description paths", (t) => {
+  const dir = tempDir(t);
+
+  const same = computePreFeatures("Fix src/a.ts and src/b.ts", ["src/a.ts", "src/b.ts"], dir);
+  assert.equal(same.files_mentioned, 2);
+  // The old double count (4) pushed this case into 1h_4h.
+  assert.equal(same.time_bucket, "15m_1h");
+
+  const extra = computePreFeatures(
+    "Fix src/a.ts, src/b.ts, and src/c.ts",
+    ["src/a.ts", "src/b.ts"],
+    dir,
+  );
+  assert.equal(extra.files_mentioned, 3);
+
+  const normalised = computePreFeatures("Touch ./src/a.ts", [" src/a.ts "], dir);
+  assert.equal(normalised.files_mentioned, 1);
+});
+
 test("cross_file follows files_mentioned", (t) => {
   const dir = tempDir(t);
   const single = computePreFeatures("Update src/a.ts", [], dir);
@@ -104,7 +130,7 @@ test("computePreFeatures records the policy heuristic on the feature bundle", (t
     "15m_1h": { max_files: 3, max_chars: 100 },
     "1h_4h": { max_files: 8, max_chars: 500 },
   };
-  const features = computePreFeatures("Fix a.ts", ["a.ts"], dir, thresholds);
+  const features = computePreFeatures("Fix a.ts and b.ts", ["a.ts"], dir, thresholds);
 
   assert.equal(features.time_bucket, "lt15m");
   assert.equal(features.language, "ts");

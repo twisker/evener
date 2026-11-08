@@ -145,13 +145,13 @@ test("glob matching supports ** and *", () => {
   assert.equal(matchesGlob("src/deep/a.ts", "src/*.ts"), false);
 });
 
-test("computePreFeatures counts distinct description tokens and stays null outside git", (t) => {
+test("computePreFeatures counts the path union and stays null outside git", (t) => {
   const dir = tempDir(t);
   const description = "Fix src/a.ts and src/a.ts plus README.md";
   const features = computePreFeatures(description, ["src/a.ts"], dir);
 
   assert.equal(features.description_chars, description.length);
-  assert.equal(features.files_mentioned, 3);
+  assert.equal(features.files_mentioned, 2);
   assert.equal(features.repo_files, null);
   assert.equal(repoFingerprint(dir), null);
   assert.equal(repoRemoteUrl(dir), null);

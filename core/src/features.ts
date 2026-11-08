@@ -20,6 +20,14 @@ const GIT_TIMEOUT_MS = 2000;
 /** Path-like tokens in prose, e.g. `src/store.ts` or `README.md`. */
 const PATH_TOKEN = /[\w./-]+\.[a-z]{1,6}/gi;
 
+/** How far before/after a repro keyword a negation word still applies. */
+const NEGATION_BEFORE_CHARS = 24;
+const NEGATION_AFTER_CHARS = 16;
+
+/** Words that turn a nearby reproduction signal into its absence. */
+const NEGATION =
+  /(?:\bno\b|\bnot\b|\bwithout\b|\bunavailable\b|\bmissing\b|\blacks\b|\bcannot\b|\bcan'?t\b|没有|无|缺|不能)/i;
+
 /** Extension (lower-case, without the dot) to language table. */
 const LANGUAGE_BY_EXTENSION: Readonly<Record<string, Language>> = {
   ts: "ts",
@@ -138,9 +146,39 @@ export function detectLanguage(description: string, files: readonly string[]): L
   return best;
 }
 
-/** True when the description contains any reproduction signal. */
+/** Normalise a path for counting: trim and drop one leading `./`. */
+function normalisePath(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.startsWith("./") ? trimmed.slice(2) : trimmed;
+}
+
+/** True when a negation word applies in the surrounding same-line window. */
+function isNegatedMatch(text: string, start: number, end: number): boolean {
+  const lineStart = text.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+  const lineBreak = text.indexOf("\n", start);
+  const lineEnd = lineBreak === -1 ? text.length : lineBreak;
+
+  const before = text.slice(Math.max(lineStart, start - NEGATION_BEFORE_CHARS), start);
+  if (NEGATION.test(before)) return true;
+
+  const after = text.slice(end, Math.min(lineEnd, end + NEGATION_AFTER_CHARS));
+  return NEGATION.test(after);
+}
+
+/** True when at least one occurrence of the pattern is not negated. */
+function hasUnnegatedMatch(pattern: RegExp, text: string): boolean {
+  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+  const global = new RegExp(pattern.source, flags);
+  for (const match of text.matchAll(global)) {
+    const start = match.index ?? 0;
+    if (!isNegatedMatch(text, start, start + match[0].length)) return true;
+  }
+  return false;
+}
+
+/** True when the description contains any unnegated reproduction signal. */
 export function hasRepro(description: string): boolean {
-  return HAS_REPRO_PATTERNS.some((pattern) => pattern.test(description));
+  return HAS_REPRO_PATTERNS.some((pattern) => hasUnnegatedMatch(pattern, description));
 }
 
 /**
@@ -166,9 +204,10 @@ export function timeBucketHeuristic(
 /**
  * Compute the no-cost features recorded on `task.created`.
  *
- * `files_mentioned` is the number of explicit `--files` entries plus the number
- * of distinct path-like tokens found in the description. `cross_file` follows
- * directly from it; `time_bucket` uses the policy heuristic when supplied.
+ * `files_mentioned` is the size of the union of normalised explicit `--files`
+ * entries and normalised path-like tokens found in the description. A path named
+ * both explicitly and in prose counts once. `cross_file` follows directly from
+ * it; `time_bucket` uses the policy heuristic when supplied.
  */
 export function computePreFeatures(
   description: string,
@@ -176,8 +215,15 @@ export function computePreFeatures(
   cwd?: string,
   thresholds: TimeBucketHeuristic = DEFAULT_TIME_BUCKET_HEURISTIC,
 ): PreFeatures {
-  const pathTokens = description.match(PATH_TOKEN) ?? [];
-  const distinctTokens = new Set(pathTokens);
+  const mentioned = new Set<string>();
+  for (const file of files) {
+    const path = normalisePath(file);
+    if (path.length > 0) mentioned.add(path);
+  }
+  for (const token of description.match(PATH_TOKEN) ?? []) {
+    const path = normalisePath(token);
+    if (path.length > 0) mentioned.add(path);
+  }
 
   const workdir = cwd ?? process.cwd();
   const listed = gitOutput(["ls-files"], workdir);
@@ -185,7 +231,7 @@ export function computePreFeatures(
     listed === null ? null : listed.length === 0 ? 0 : listed.split(/\r?\n/).filter(Boolean).length;
 
   const descriptionChars = description.length;
-  const filesMentioned = files.length + distinctTokens.size;
+  const filesMentioned = mentioned.size;
 
   return {
     description_chars: descriptionChars,

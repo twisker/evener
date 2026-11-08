@@ -68,20 +68,36 @@ export class RouterError extends Error {
 // Rule evaluation (spec §6 step 3)
 // ---------------------------------------------------------------------------
 
-/** Evaluate rules in order; first match wins. */
+/** Evaluate rules in order; first match wins. All present conditions must hold. */
 export function evaluateRules(rules: Rule[], features: RuleFeatures): RuleMatch | null {
   for (const rule of rules) {
     const condition = rule.if;
-    let matched = false;
+    const preFeatures = features.pre_features;
+    let matched = true;
 
     if (condition.constraint !== undefined) {
       matched = features.constraints.includes(condition.constraint);
-    } else if (condition.label !== undefined) {
+    }
+    if (matched && condition.label !== undefined) {
       matched = features.label === condition.label;
-    } else if (condition.files_mentioned_gte !== undefined) {
-      matched = features.pre_features.files_mentioned >= condition.files_mentioned_gte;
-    } else if (condition.description_chars_gte !== undefined) {
-      matched = features.pre_features.description_chars >= condition.description_chars_gte;
+    }
+    if (matched && condition.files_mentioned_gte !== undefined) {
+      matched = preFeatures.files_mentioned >= condition.files_mentioned_gte;
+    }
+    if (matched && condition.description_chars_gte !== undefined) {
+      matched = preFeatures.description_chars >= condition.description_chars_gte;
+    }
+    if (matched && condition.time_bucket !== undefined) {
+      matched = (preFeatures.time_bucket ?? "unknown") === condition.time_bucket;
+    }
+    if (matched && condition.language !== undefined) {
+      matched = (preFeatures.language ?? null) === condition.language;
+    }
+    if (matched && condition.has_repro !== undefined) {
+      matched = (preFeatures.has_repro ?? false) === condition.has_repro;
+    }
+    if (matched && condition.cross_file !== undefined) {
+      matched = (preFeatures.cross_file ?? false) === condition.cross_file;
     }
 
     if (matched) return { rule, target: rule.then };
@@ -92,15 +108,20 @@ export function evaluateRules(rules: Rule[], features: RuleFeatures): RuleMatch 
 
 function describeCondition(rule: Rule): string {
   const condition = rule.if;
-  if (condition.constraint !== undefined) return `constraint=${condition.constraint}`;
-  if (condition.label !== undefined) return `label=${condition.label}`;
+  const parts: string[] = [];
+  if (condition.constraint !== undefined) parts.push(`constraint=${condition.constraint}`);
+  if (condition.label !== undefined) parts.push(`label=${condition.label}`);
   if (condition.files_mentioned_gte !== undefined) {
-    return `files_mentioned>=${condition.files_mentioned_gte}`;
+    parts.push(`files_mentioned>=${condition.files_mentioned_gte}`);
   }
   if (condition.description_chars_gte !== undefined) {
-    return `description_chars>=${condition.description_chars_gte}`;
+    parts.push(`description_chars>=${condition.description_chars_gte}`);
   }
-  return "unknown condition";
+  if (condition.time_bucket !== undefined) parts.push(`time_bucket=${condition.time_bucket}`);
+  if (condition.language !== undefined) parts.push(`language=${condition.language}`);
+  if (condition.has_repro !== undefined) parts.push(`has_repro=${condition.has_repro}`);
+  if (condition.cross_file !== undefined) parts.push(`cross_file=${condition.cross_file}`);
+  return parts.length > 0 ? parts.join(" AND ") : "unknown condition";
 }
 
 // ---------------------------------------------------------------------------
@@ -268,9 +289,17 @@ function taskFeatures(
   created: TaskCreatedPayload,
   preFeatures: PreFeatures,
 ): RuleFeatures {
+  // Old `task.created` events predate the stratification fields.
+  const normalised: PreFeatures = {
+    ...preFeatures,
+    language: preFeatures.language ?? null,
+    has_repro: preFeatures.has_repro === true,
+    cross_file: preFeatures.cross_file === true,
+    time_bucket: preFeatures.time_bucket ?? "unknown",
+  };
   return {
     label: created.analysis_label,
-    pre_features: preFeatures,
+    pre_features: normalised,
     constraints: created.constraints,
     excerpt: policy.privacy.store_description_excerpt ? created.description_excerpt : null,
   };

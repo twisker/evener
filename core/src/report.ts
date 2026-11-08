@@ -7,6 +7,7 @@
  */
 
 import type { Store } from "./store.js";
+import { LANGUAGES, TIME_BUCKETS } from "./types.js";
 import {
   mean,
   mdd as minimumDetectableDifference,
@@ -37,16 +38,25 @@ import type {
 // Public report types
 // ---------------------------------------------------------------------------
 
+export const REPORT_DIMENSIONS = [
+  "label",
+  "language",
+  "time_bucket",
+  "has_repro",
+  "cross_file",
+] as const;
+export type ReportBy = (typeof REPORT_DIMENSIONS)[number];
+
 export interface ReportOptions {
   since: Date;
-  by?: "label";
+  by?: ReportBy;
   now: Date;
 }
 
 export interface ReportHeader {
   since: string;
   now: string;
-  by: "label" | null;
+  by: ReportBy;
   total_tasks: number;
   closed_tasks: number;
   accepted_tasks: number;
@@ -71,7 +81,8 @@ export interface ArmReport {
 }
 
 export interface StratumReport {
-  analysis_label: Label;
+  dimension: ReportBy;
+  key: string;
   arm: string;
   n: number;
   accepted: number;
@@ -557,6 +568,46 @@ function armForTask(task: TaskRow, experimentOn: boolean): string {
   return task.arm ?? "all";
 }
 
+/** Render one task's key for the chosen stratification dimension. */
+export function stratumKey(task: TaskRow, dimension: ReportBy): string {
+  switch (dimension) {
+    case "label":
+      return task.analysis_label;
+    case "language":
+      return task.language ?? "null";
+    case "time_bucket":
+      return task.time_bucket;
+    case "has_repro":
+      return task.has_repro ? "true" : "false";
+    case "cross_file":
+      return task.cross_file ? "true" : "false";
+  }
+}
+
+function orderedStratumKeys(
+  dimension: ReportBy,
+  observed: ReadonlySet<string>,
+  policy: Policy,
+): string[] {
+  const canonical: readonly string[] = (() => {
+    switch (dimension) {
+      case "label":
+        return policy.taxonomy.labels;
+      case "language":
+        return LANGUAGES;
+      case "time_bucket":
+        return TIME_BUCKETS;
+      case "has_repro":
+      case "cross_file":
+        return ["false", "true"];
+    }
+  })();
+
+  const ordered = canonical.filter((key) => observed.has(key));
+  const extras = [...observed].filter((key) => !ordered.includes(key)).sort();
+  return [...ordered, ...extras];
+}
+
 // ---------------------------------------------------------------------------
 // buildReport
 // ---------------------------------------------------------------------------
@@ -569,6 +620,7 @@ export function buildReport(
 ): Report {
   const since = opts.since;
   const now = opts.now;
+  const by: ReportBy = opts.by ?? "label";
   const sinceIso = since.toISOString();
   const nowIso = now.toISOString();
   const sinceMs = since.getTime();
@@ -620,7 +672,7 @@ export function buildReport(
   const header: ReportHeader = {
     since: sinceIso,
     now: nowIso,
-    by: opts.by ?? null,
+    by,
     total_tasks: windowTasks.length,
     closed_tasks: windowTasks.filter((task) => task.state === "closed").length,
     accepted_tasks: windowTasks.filter((task) => task.outcome === "accepted").length,
@@ -652,7 +704,7 @@ export function buildReport(
     };
   });
 
-  // --- Section 3: strata by analysis label ---------------------------------
+  // --- Section 3: strata by the chosen dimension ---------------------------
   const observedLabels = [...new Set(windowTasks.map((task) => task.analysis_label))];
   const labelOrder = policy.taxonomy.labels.filter((label) => observedLabels.includes(label));
   const extraLabels = observedLabels
@@ -660,12 +712,15 @@ export function buildReport(
     .sort();
   const labels = [...labelOrder, ...extraLabels];
 
+  const observedKeys = new Set(windowTasks.map((task) => stratumKey(task, by)));
+  const stratumKeys = orderedStratumKeys(by, observedKeys, policy);
+
   const strata: StratumReport[] = [];
-  for (const label of labels) {
+  for (const key of stratumKeys) {
     for (const armName of armNames) {
       const group = tasks.filter(
         (task) =>
-          task.task.analysis_label === label &&
+          stratumKey(task.task, by) === key &&
           armForTask(task.task, experimentOn) === armName,
       );
       if (group.length === 0) continue;
@@ -674,7 +729,8 @@ export function buildReport(
       const quality = computeQuality(closed, weights, suspected);
       const cpat = cpatFor(group);
       strata.push({
-        analysis_label: label,
+        dimension: by,
+        key,
         arm: armName,
         n: closed.length,
         accepted: accepted.length,
@@ -1111,6 +1167,14 @@ function insufficientCell(insufficient: boolean, content: string): string {
   return insufficient ? "样本不足 / insufficient" : content;
 }
 
+const DIMENSION_LABELS: Record<ReportBy, string> = {
+  label: "标签 / label",
+  language: "语言 / language",
+  time_bucket: "时间桶 / time_bucket",
+  has_repro: "有复现 / has_repro",
+  cross_file: "跨文件 / cross_file",
+};
+
 /** Compact bilingual markdown rendering of a report. */
 export function renderMarkdown(report: Report): string {
   const lines: string[] = [];
@@ -1144,13 +1208,16 @@ export function renderMarkdown(report: Report): string {
   }
   lines.push("");
 
-  lines.push("## 分层 / Strata by analysis label");
+  const dimension = report.header.by;
+  lines.push(`## 分层 / Strata by ${dimension}`);
   lines.push("");
-  lines.push("| 标签 / Label | 臂 / Arm | CPAT | 质量分 / Quality | 性价比 / Value | n | 状态 / Status |");
+  lines.push(
+    `| ${DIMENSION_LABELS[dimension]} | 臂 / Arm | CPAT | 质量分 / Quality | 性价比 / Value | n | 状态 / Status |`,
+  );
   lines.push("|---|---|---:|---:|---:|---:|---|");
   for (const row of report.strata) {
     lines.push(
-      `| ${escapeCell(row.analysis_label)} | ${escapeCell(row.arm)} | ${formatUsd(row.cpat)} | ${formatNumber(row.quality_score)} | ${formatNumber(row.quality_per_cost)} | ${row.n} | ${row.insufficient ? "样本不足 / insufficient" : "ok"} |`,
+      `| ${escapeCell(row.key)} | ${escapeCell(row.arm)} | ${formatUsd(row.cpat)} | ${formatNumber(row.quality_score)} | ${formatNumber(row.quality_per_cost)} | ${row.n} | ${row.insufficient ? "样本不足 / insufficient" : "ok"} |`,
     );
   }
   lines.push("");

@@ -13,7 +13,7 @@ import {
   validatePolicy,
   validatePricing,
 } from "../src/config.js";
-import type { Policy } from "../src/types.js";
+import type { Policy, RuleCondition } from "../src/types.js";
 
 function tempDir(t: TestContext): string {
   const dir = mkdtempSync(join(tmpdir(), "evener-config-"));
@@ -124,4 +124,54 @@ test("resolveHome prefers --home, then EVENER_HOME", (t) => {
 
   assert.equal(resolveHome({ home: fromFlag, env: { EVENER_HOME: fromEnv } }), fromFlag);
   assert.equal(resolveHome({ env: { EVENER_HOME: fromEnv } }), fromEnv);
+});
+
+test("the bundled labeler exposes the time-bucket heuristic and prompt_extra defaults", () => {
+  const policy = defaultPolicy();
+  assert.deepEqual(policy.labeler.time_bucket_heuristic, {
+    lt15m: { max_files: 1, max_chars: 400 },
+    "15m_1h": { max_files: 3, max_chars: 1500 },
+    "1h_4h": { max_files: 8, max_chars: 5000 },
+  });
+  assert.equal(policy.labeler.prompt_extra, null);
+});
+
+test("rule conditions combine with AND and reject a bad time_bucket at its JSON pointer", () => {
+  const policy = structuredClone(defaultPolicy());
+  const rule = policy.rules[0];
+  assert.ok(rule !== undefined);
+  rule.if = {
+    label: "bugfix",
+    has_repro: false,
+    cross_file: true,
+  };
+  const valid = validatePolicy(policy);
+  assert.equal(valid.ok, true, JSON.stringify(valid.errors));
+
+  rule.if = { time_bucket: "5h" } as unknown as RuleCondition;
+  const invalid = validatePolicy(policy);
+  assert.equal(invalid.ok, false);
+  assert.ok(
+    invalid.errors.some((issue) => issue.path === "/rules/0/if/time_bucket"),
+    `expected /rules/0/if/time_bucket, got ${JSON.stringify(invalid.errors)}`,
+  );
+});
+
+test("the heuristic rejects non-positive file and character limits", () => {
+  const policy = defaultPolicy();
+  policy.labeler.time_bucket_heuristic.lt15m.max_files = 0;
+  policy.labeler.time_bucket_heuristic["15m_1h"].max_chars = 0;
+
+  const result = validatePolicy(policy);
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.errors.some(
+      (issue) => issue.path === "/labeler/time_bucket_heuristic/lt15m/max_files",
+    ),
+  );
+  assert.ok(
+    result.errors.some(
+      (issue) => issue.path === "/labeler/time_bucket_heuristic/15m_1h/max_chars",
+    ),
+  );
 });

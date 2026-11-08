@@ -64,6 +64,36 @@ export const LABELS = [
 ] as const;
 export type Label = (typeof LABELS)[number];
 
+export const LANGUAGES = [
+  "ts",
+  "js",
+  "py",
+  "go",
+  "rs",
+  "java",
+  "kt",
+  "rb",
+  "php",
+  "cs",
+  "cpp",
+  "c",
+  "swift",
+  "sh",
+  "sql",
+  "md",
+  "yaml",
+  "json",
+  "other",
+] as const;
+export type Language = (typeof LANGUAGES)[number];
+
+export const TIME_BUCKETS = ["lt15m", "15m_1h", "1h_4h", "gt4h", "unknown"] as const;
+export type TimeBucket = (typeof TIME_BUCKETS)[number];
+
+/** The three bounded heuristic buckets, walked in order. */
+export const TIME_BUCKET_HEURISTIC_KEYS = ["lt15m", "15m_1h", "1h_4h"] as const;
+export type HeuristicTimeBucket = (typeof TIME_BUCKET_HEURISTIC_KEYS)[number];
+
 export const DECIDED_BY_VALUES = [
   "rule",
   "classifier",
@@ -132,6 +162,11 @@ export interface PreFeatures {
   description_chars: number;
   files_mentioned: number;
   repo_files: number | null;
+  /** Most frequent extension among files/tokens, or null when none were seen. */
+  language: Language | null;
+  has_repro: boolean;
+  cross_file: boolean;
+  time_bucket: TimeBucket;
 }
 
 export interface TaskCreatedPayload {
@@ -292,7 +327,18 @@ export interface LabelerConfig {
   model: string | null;
   endpoint: string | null;
   api_key_env: string | null;
+  /** Heuristic time estimates, walked in this order. */
+  time_bucket_heuristic: TimeBucketHeuristic;
+  /** Free text appended to the model labeler prompt. */
+  prompt_extra: string | null;
 }
+
+export interface TimeBucketThreshold {
+  max_files: number;
+  max_chars: number;
+}
+
+export type TimeBucketHeuristic = Record<HeuristicTimeBucket, TimeBucketThreshold>;
 
 export interface Taxonomy {
   labels: Label[];
@@ -313,15 +359,19 @@ export interface TargetPolicy {
 }
 
 /**
- * A rule has exactly one condition. All fields are optional in the type so
- * validation can report "exactly one of" errors, but a valid policy always
- * carries precisely one.
+ * A rule may contain one or more conditions; all present conditions must hold
+ * (AND). Every field is optional in the type so validation can report an empty
+ * condition, but a valid policy always carries at least one.
  */
 export interface RuleCondition {
   constraint?: string;
   label?: Label;
   files_mentioned_gte?: number;
   description_chars_gte?: number;
+  time_bucket?: TimeBucket;
+  language?: Language;
+  has_repro?: boolean;
+  cross_file?: boolean;
 }
 
 export interface Rule {
@@ -451,6 +501,10 @@ export interface TaskRow {
   host: string;
   host_session_id: string | null;
   analysis_label: Label;
+  language: Language | null;
+  has_repro: boolean;
+  cross_file: boolean;
+  time_bucket: TimeBucket;
   arm: string | null;
   policy_version: string;
   current_round: number;

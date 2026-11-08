@@ -26,7 +26,15 @@ function arm(): Policy {
 function features(overrides: Partial<TaskFeatures> = {}): TaskFeatures {
   return {
     label: "bugfix",
-    pre_features: { description_chars: 42, files_mentioned: 2, repo_files: 10 },
+    pre_features: {
+      description_chars: 42,
+      files_mentioned: 2,
+      repo_files: 10,
+      language: "ts",
+      has_repro: false,
+      cross_file: true,
+      time_bucket: "15m_1h",
+    },
     constraints: [],
     excerpt: null,
     ...overrides,
@@ -280,7 +288,7 @@ test("classifyTarget leaves cost at zero when usage is absent", async () => {
 test("labelWithModel uses the fixed prompt and falls back to the classifier endpoint/key", async () => {
   const policy = arm();
   policy.classifier.endpoint = "https://classifier.test/v1";
-  policy.labeler = { model: "labeler-1", endpoint: null, api_key_env: null };
+  policy.labeler = { ...policy.labeler, model: "labeler-1" };
 
   let seenUrl = "";
   let seenUser = "";
@@ -289,10 +297,10 @@ test("labelWithModel uses the fixed prompt and falls back to the classifier endp
     const raw = typeof init?.body === "string" ? init.body : "";
     const body = JSON.parse(raw) as { messages?: { role: string; content: string }[] };
     seenUser = body.messages?.find((message) => message.role === "user")?.content ?? "";
-    return chatResponse('{"label":"docs"}');
+    return chatResponse('{"label":"docs","time_bucket":"15m_1h"}');
   });
 
-  const label = await labelWithModel(
+  const result = await labelWithModel(
     policy.labeler,
     policy.taxonomy,
     "Update the README",
@@ -301,18 +309,19 @@ test("labelWithModel uses the fixed prompt and falls back to the classifier endp
     policy.classifier,
   );
 
-  assert.equal(label, "docs");
+  assert.deepEqual(result, { label: "docs", time_bucket: "15m_1h" });
   assert.equal(seenUrl, "https://classifier.test/v1/chat/completions");
   assert.match(seenUser, /Classify this coding task into exactly one label from: bugfix/);
-  assert.match(seenUser, /Answer \{"label": "<label>"\}/);
+  assert.match(seenUser, /Answer \{"label": "<label>", "time_bucket": "<bucket>"\}/);
+  assert.match(seenUser, /25 min|15 min/);
   assert.match(seenUser, /Update the README/);
 });
 
 test("labelWithModel returns unknown on HTTP failure", async () => {
   const policy = arm();
-  policy.labeler = { model: "labeler-1", endpoint: null, api_key_env: null };
+  policy.labeler = { ...policy.labeler, model: "labeler-1" };
 
-  const label = await labelWithModel(
+  const result = await labelWithModel(
     policy.labeler,
     policy.taxonomy,
     "Update the README",
@@ -321,32 +330,55 @@ test("labelWithModel returns unknown on HTTP failure", async () => {
     policy.classifier,
   );
 
-  assert.equal(label, "unknown");
+  assert.deepEqual(result, { label: "unknown", time_bucket: null });
 });
 
 test("labelTask uses the model label when configured and the heuristic otherwise", async () => {
   const policy = arm();
-  policy.labeler = { model: "labeler-1", endpoint: null, api_key_env: null };
+  policy.labeler = { ...policy.labeler, model: "labeler-1" };
 
-  const labelled = await labelTask("Fix the crash on startup", policy, {
-    env: { CLASSIFIER_KEY: "secret" },
-    fetchImpl: stubFetch(() => chatResponse('{"label":"refactor"}')),
+  const preFeatures = { description_chars: 20, files_mentioned: 1 };
+  const labelled = await labelTask(
+    "Fix the crash on startup",
+    policy,
+    {
+      env: { CLASSIFIER_KEY: "secret" },
+      fetchImpl: stubFetch(() => chatResponse('{"label":"refactor","time_bucket":"1h_4h"}')),
+    },
+    preFeatures,
+  );
+  assert.deepEqual(labelled, {
+    label: "refactor",
+    labeler_model: "labeler-1",
+    time_bucket: "1h_4h",
   });
-  assert.deepEqual(labelled, { label: "refactor", labeler_model: "labeler-1" });
 
   const heuristicPolicy = arm();
-  heuristicPolicy.labeler = { model: null, endpoint: null, api_key_env: null };
-  const heuristic = await labelTask("Fix the crash on startup", heuristicPolicy, {});
-  assert.deepEqual(heuristic, { label: "bugfix", labeler_model: "heuristic" });
+  heuristicPolicy.labeler = { ...heuristicPolicy.labeler, model: null };
+  const heuristic = await labelTask("Fix the crash on startup", heuristicPolicy, {}, preFeatures);
+  assert.deepEqual(heuristic, {
+    label: "bugfix",
+    labeler_model: "heuristic",
+    time_bucket: "lt15m",
+  });
 });
 
 test("labelTask keeps the heuristic when the model cannot label", async () => {
   const policy = arm();
-  policy.labeler = { model: "labeler-1", endpoint: null, api_key_env: null };
+  policy.labeler = { ...policy.labeler, model: "labeler-1" };
 
-  const labelled = await labelTask("Fix the crash on startup", policy, {
-    env: { CLASSIFIER_KEY: "secret" },
-    fetchImpl: stubFetch(() => new Response("down", { status: 500 })),
+  const labelled = await labelTask(
+    "Fix the crash on startup",
+    policy,
+    {
+      env: { CLASSIFIER_KEY: "secret" },
+      fetchImpl: stubFetch(() => new Response("down", { status: 500 })),
+    },
+    { description_chars: 20, files_mentioned: 1 },
+  );
+  assert.deepEqual(labelled, {
+    label: "bugfix",
+    labeler_model: "heuristic",
+    time_bucket: "lt15m",
   });
-  assert.deepEqual(labelled, { label: "bugfix", labeler_model: "heuristic" });
 });

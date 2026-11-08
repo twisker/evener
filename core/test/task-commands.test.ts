@@ -63,7 +63,15 @@ async function initHome(home: string): Promise<void> {
 interface CreateOutput {
   task_id: string;
   analysis_label: Label;
-  pre_features: { description_chars: number; files_mentioned: number; repo_files: number | null };
+  pre_features: {
+    description_chars: number;
+    files_mentioned: number;
+    repo_files: number | null;
+    language: string | null;
+    has_repro: boolean;
+    cross_file: boolean;
+    time_bucket: string;
+  };
   policy_version: string;
   arm: string | null;
 }
@@ -178,6 +186,10 @@ test("task create round-trips through status and tasks", async (t) => {
   assert.equal(created.payload.policy_version.length, 12);
   assert.equal(created.payload.pre_features.files_mentioned, 1);
   assert.equal(created.payload.pre_features.repo_files, null);
+  assert.equal(created.payload.pre_features.language, "ts");
+  assert.equal(created.payload.pre_features.has_repro, false);
+  assert.equal(created.payload.pre_features.cross_file, false);
+  assert.equal(created.payload.pre_features.time_bucket, "lt15m");
 
   const status = await run<StatusOutput>([
     "status",

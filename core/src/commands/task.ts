@@ -137,7 +137,15 @@ async function createTask(
 }> {
   const topPolicy = loadTopPolicy(ctx);
   const taskId = uuid();
-  const labelled = await labelTask(options.description, topPolicy, { env: ctx.io.env });
+  const preFeatures = computePreFeatures(
+    options.description,
+    options.files,
+    options.cwd,
+    topPolicy.labeler.time_bucket_heuristic,
+  );
+  const labelled = await labelTask(options.description, topPolicy, { env: ctx.io.env }, preFeatures);
+  // The model may revise the heuristic estimate; both paths need the same field.
+  preFeatures.time_bucket = labelled.time_bucket;
   const arm = assignArm(topPolicy, taskId, labelled.label);
 
   const effective =
@@ -146,7 +154,6 @@ async function createTask(
       : loadEffectivePolicy(ctx.home, { arm });
   const policy = effective.policy;
 
-  const preFeatures = computePreFeatures(options.description, options.files, options.cwd);
   const fingerprint = repoFingerprint(options.cwd);
   const remoteUrl = repoRemoteUrl(options.cwd);
 

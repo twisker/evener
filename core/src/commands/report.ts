@@ -16,7 +16,8 @@ import {
   loadPricing,
 } from "../config.js";
 import { exportJsonl, exportOtel } from "../export.js";
-import { buildReport, renderMarkdown } from "../report.js";
+import { buildReport, renderMarkdown, REPORT_DIMENSIONS } from "../report.js";
+import type { ReportBy } from "../report.js";
 import type { Pricing } from "../types.js";
 import { ensureDir } from "../util.js";
 import { CommandError } from "./types.js";
@@ -127,10 +128,17 @@ async function cmdReport(ctx: CommandContext, argv: string[]): Promise<unknown> 
       `report --format must be json or md (got "${format}")`,
     );
   }
-  const by = values["by"];
-  if (by !== undefined && by !== "label") {
-    throw new CommandError("invalid_arguments", `report --by only supports "label"`);
+  const byValue = values["by"] ?? "label";
+  if (
+    typeof byValue !== "string" ||
+    !(REPORT_DIMENSIONS as readonly string[]).includes(byValue)
+  ) {
+    throw new CommandError(
+      "invalid_arguments",
+      `report --by must be one of: ${REPORT_DIMENSIONS.join(", ")}`,
+    );
   }
+  const by = byValue as ReportBy;
 
   const now = new Date();
   const since = parseSince(values["since"], now);
@@ -139,7 +147,7 @@ async function cmdReport(ctx: CommandContext, argv: string[]): Promise<unknown> 
   const report = buildReport(ctx.store(), policy, pricing, {
     since,
     now,
-    ...(by === "label" ? { by: "label" as const } : {}),
+    by,
   });
 
   const reportsDir = join(ctx.home, "reports");

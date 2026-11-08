@@ -16,6 +16,7 @@ import { runCli } from "../src/cli.js";
 import type { CliIO } from "../src/cli.js";
 import { defaultPolicy, defaultPricing, policyTemplatePath } from "../src/config.js";
 import { buildReport, renderMarkdown } from "../src/report.js";
+import type { ReportBy } from "../src/report.js";
 import { openStore } from "../src/store.js";
 import type { Store } from "../src/store.js";
 import type {
@@ -81,6 +82,7 @@ interface SeededTaskInfo {
   accepted: boolean;
   total_cost_usd: number;
   rounds: number;
+  time_bucket: string;
 }
 
 interface SeedResult {
@@ -143,6 +145,7 @@ function seed(store: Store, options: SeedOptions = {}): SeedResult {
     cost: number,
     firstAccepted: boolean,
     rejectReason: "tests_failed" | "style",
+    timeBucket: string,
   ): void => {
     const start = T0 + taskIndex * TASK_SPACING_MS;
     taskIndex += 1;
@@ -163,7 +166,15 @@ function seed(store: Store, options: SeedOptions = {}): SeedResult {
         description_hash: `hash-${taskId}`,
         description_excerpt: null,
         repo_fingerprint: null,
-        pre_features: { description_chars: 20, files_mentioned: 1, repo_files: null },
+        pre_features: {
+          description_chars: 20,
+          files_mentioned: 1,
+          repo_files: null,
+          language: "ts",
+          has_repro: false,
+          cross_file: false,
+          time_bucket: timeBucket,
+        },
         analysis_label: label,
         labeler_model: "heuristic",
         constraints: [],
@@ -266,6 +277,7 @@ function seed(store: Store, options: SeedOptions = {}): SeedResult {
       accepted: true,
       total_cost_usd: totalCost,
       rounds,
+      time_bucket: timeBucket,
     });
   };
 
@@ -286,6 +298,8 @@ function seed(store: Store, options: SeedOptions = {}): SeedResult {
           label === "bugfix" ? index < 4 : !(label === "mechanical" && arm === "B" && index >= 4);
         const reason: "tests_failed" | "style" =
           label === "bugfix" ? "style" : "tests_failed";
+        const timeBucket =
+          label === "mechanical" ? "lt15m" : label === "bugfix" ? "1h_4h" : "gt4h";
         seedOne(
           `task-${label}-${arm}-${index}`,
           arm,
@@ -294,6 +308,7 @@ function seed(store: Store, options: SeedOptions = {}): SeedResult {
           cost,
           firstAccepted,
           reason,
+          timeBucket,
         );
       }
     }
@@ -301,7 +316,7 @@ function seed(store: Store, options: SeedOptions = {}): SeedResult {
 
   if (options.testCell !== false) {
     for (let index = 0; index < 5; index += 1) {
-      seedOne(`task-test-A-${index}`, "A", "test", "dsh", 0.05, true, "tests_failed");
+      seedOne(`task-test-A-${index}`, "A", "test", "dsh", 0.05, true, "tests_failed", "unknown");
     }
   }
 
@@ -315,11 +330,16 @@ function experimentPolicy() {
   return policy;
 }
 
-function reportFor(store: Store, policy = experimentPolicy(), pricing: Pricing = defaultPricing()) {
+function reportFor(
+  store: Store,
+  policy = experimentPolicy(),
+  pricing: Pricing = defaultPricing(),
+  by: ReportBy = "label",
+) {
   return buildReport(store, policy, pricing, {
     since: new Date(T0 - 1000),
     now: new Date(T0 + 400 * TASK_SPACING_MS),
-    by: "label",
+    by,
   });
 }
 
@@ -363,7 +383,15 @@ function createAttributionTask(store: Store, taskId: string, label: Label): Task
       description_hash: `hash-${taskId}`,
       description_excerpt: null,
       repo_fingerprint: null,
-      pre_features: { description_chars: 20, files_mentioned: 1, repo_files: null },
+      pre_features: {
+        description_chars: 20,
+        files_mentioned: 1,
+        repo_files: null,
+        language: "ts",
+        has_repro: false,
+        cross_file: false,
+        time_bucket: "lt15m",
+      },
       analysis_label: label,
       labeler_model: "heuristic",
       constraints: [],
@@ -424,13 +452,41 @@ test("experiment off produces a single all arm", (t) => {
   assert.equal(report.header.experiment_mode, "off");
 });
 
+test("strata can be grouped by time_bucket and boolean dimensions", (t) => {
+  const { store } = tempStore(t);
+  seed(store);
+
+  const byBucket = reportFor(store, experimentPolicy(), defaultPricing(), "time_bucket");
+  assert.equal(byBucket.header.by, "time_bucket");
+  assert.deepEqual(
+    [...new Set(byBucket.strata.map((row) => row.key))],
+    ["lt15m", "1h_4h", "gt4h", "unknown"],
+  );
+  assert.ok(byBucket.strata.every((row) => row.dimension === "time_bucket"));
+
+  const mechanical = byBucket.strata.find(
+    (row) => row.key === "lt15m" && row.arm === "A",
+  );
+  assert.ok(mechanical !== undefined);
+  assert.equal(mechanical.n, 12);
+  assert.ok(Math.abs((mechanical.cpat ?? 0) - 0.1) < 1e-12);
+
+  const byRepro = reportFor(store, experimentPolicy(), defaultPricing(), "has_repro");
+  assert.equal(byRepro.header.by, "has_repro");
+  assert.deepEqual([...new Set(byRepro.strata.map((row) => row.key))], ["false"]);
+  assert.ok(byRepro.strata.every((row) => row.dimension === "has_repro"));
+
+  const byCrossFile = reportFor(store, experimentPolicy(), defaultPricing(), "cross_file");
+  assert.deepEqual([...new Set(byCrossFile.strata.map((row) => row.key))], ["false"]);
+});
+
 test("CPAT for one cell equals the hand-computed value", (t) => {
   const { store } = tempStore(t);
   seed(store);
   const report = reportFor(store);
 
   const cell = report.strata.find(
-    (row) => row.analysis_label === "mechanical" && row.arm === "A",
+    (row) => row.key === "mechanical" && row.arm === "A",
   );
   assert.ok(cell !== undefined, "mechanical/A stratum missing");
   assert.equal(cell.n, 12);
@@ -445,7 +501,7 @@ test("a cell with n = 5 is marked insufficient", (t) => {
   const report = reportFor(store);
 
   const cell = report.strata.find(
-    (row) => row.analysis_label === "test" && row.arm === "A",
+    (row) => row.key === "test" && row.arm === "A",
   );
   assert.ok(cell !== undefined, "test/A stratum missing");
   assert.equal(cell.n, 5);
@@ -465,13 +521,13 @@ test("quality weights redistribute when there is no feedback or revert data", (t
   assert.equal(arm.weights.revert, 0);
 
   const mechanical = report.strata.find(
-    (row) => row.analysis_label === "mechanical" && row.arm === "A",
+    (row) => row.key === "mechanical" && row.arm === "A",
   );
   assert.ok(mechanical !== undefined);
   assert.ok(Math.abs((mechanical.quality_score ?? 0) - 1) < 1e-12);
 
   const b = report.strata.find(
-    (row) => row.analysis_label === "mechanical" && row.arm === "B",
+    (row) => row.key === "mechanical" && row.arm === "B",
   );
   assert.ok(b !== undefined);
   const expected = (4 / 12) * (2 / 3) + 1 * (1 / 3);
@@ -733,7 +789,12 @@ test("markdown rendering uses bilingual headers and the MDD explanation", (t) =>
   const markdown = renderMarkdown(reportFor(store));
 
   assert.ok(markdown.includes("总表 / Summary"));
-  assert.ok(markdown.includes("分层 / Strata by analysis label"));
+  assert.ok(markdown.includes("分层 / Strata by label"));
+  const bucketMarkdown = renderMarkdown(
+    reportFor(store, experimentPolicy(), defaultPricing(), "time_bucket"),
+  );
+  assert.ok(bucketMarkdown.includes("分层 / Strata by time_bucket"));
+  assert.ok(bucketMarkdown.includes("时间桶 / time_bucket"));
   assert.ok(markdown.includes("目标画像 / Targets"));
   assert.ok(markdown.includes("可检出差异 / Detectability"));
   assert.ok(markdown.includes("MDD"));
@@ -922,6 +983,24 @@ test("report/apply/export commands integrate with the CLI", async (t) => {
   assert.equal(report.header.total_tasks, seeded.total_tasks);
   assert.ok(report.header.saved_to !== null);
   assert.equal(existsSync(report.header.saved_to ?? ""), true);
+
+  const byBucketText = await runCliText([
+    "report",
+    "--home",
+    home,
+    "--since",
+    "2019-01-01T00:00:00.000Z",
+    "--by",
+    "time_bucket",
+  ]);
+  assert.equal(byBucketText.code, 0);
+  const byBucket = JSON.parse(byBucketText.text) as {
+    header: { by: string };
+    strata: { dimension: string; key: string }[];
+  };
+  assert.equal(byBucket.header.by, "time_bucket");
+  assert.ok(byBucket.strata.every((row) => row.dimension === "time_bucket"));
+  assert.ok(byBucket.strata.some((row) => row.key === "lt15m"));
 
   const markdown = await runCliText([
     "report",

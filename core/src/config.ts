@@ -4,8 +4,25 @@ import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { sha256 } from "./util.js";
-import { ASSIGNMENTS, COST_TIERS, EXPERIMENT_MODES, LABELS, REJECT_REASONS } from "./types.js";
-import type { ExperimentMode, Label, Policy, Pricing, RejectReason } from "./types.js";
+import {
+  ASSIGNMENTS,
+  COST_TIERS,
+  EXPERIMENT_MODES,
+  LABELS,
+  LANGUAGES,
+  REJECT_REASONS,
+  TIME_BUCKET_HEURISTIC_KEYS,
+  TIME_BUCKETS,
+} from "./types.js";
+import type {
+  ExperimentMode,
+  Label,
+  Language,
+  Policy,
+  Pricing,
+  RejectReason,
+  TimeBucket,
+} from "./types.js";
 
 // Re-exported for callers that only import from config.
 export type { Policy, Pricing } from "./types.js";
@@ -262,7 +279,8 @@ const CLASSIFIER_KEYS = [
   "price",
 ] as const;
 const CLASSIFIER_PRICE_KEYS = ["input_per_mtok", "output_per_mtok"] as const;
-const LABELER_KEYS = ["model", "endpoint", "api_key_env"] as const;
+const LABELER_KEYS = ["model", "endpoint", "api_key_env", "time_bucket_heuristic", "prompt_extra"] as const;
+const TIME_BUCKET_THRESHOLD_KEYS = ["max_files", "max_chars"] as const;
 const TAXONOMY_KEYS = ["labels"] as const;
 const TARGET_KEYS = [
   "description",
@@ -280,6 +298,10 @@ const CONDITION_KEYS = [
   "label",
   "files_mentioned_gte",
   "description_chars_gte",
+  "time_bucket",
+  "language",
+  "has_repro",
+  "cross_file",
 ] as const;
 const PREFERENCES_KEYS = ["cost_weight", "quality_weight", "per_label_bias"] as const;
 const ESCALATION_KEYS = [
@@ -549,12 +571,81 @@ function validateClassifier(obj: Record<string, unknown>, errors: ValidationIssu
   }
 }
 
+/**
+ * The heuristic object must list its bounded buckets in canonical order. A
+ * partial object is allowed (defaults fill the rest), but present keys may not
+ * be reordered.
+ */
+function checkHeuristicBucketOrder(
+  rawLabeler: unknown,
+  errors: ValidationIssue[],
+): void {
+  if (!isPlainObject(rawLabeler)) return;
+  const heuristic = rawLabeler["time_bucket_heuristic"];
+  if (!isPlainObject(heuristic)) return;
+
+  const present = Object.keys(heuristic).filter((key) =>
+    (TIME_BUCKET_HEURISTIC_KEYS as readonly string[]).includes(key),
+  );
+  const canonical = TIME_BUCKET_HEURISTIC_KEYS.filter((key) => present.includes(key));
+  if (present.join(",") !== canonical.join(",")) {
+    errors.push({
+      path: "/labeler/time_bucket_heuristic",
+      message: `buckets must appear in order: ${TIME_BUCKET_HEURISTIC_KEYS.join(", ")}`,
+    });
+  }
+}
+
+function validateTimeBucketHeuristic(
+  value: unknown,
+  base: string,
+  errors: ValidationIssue[],
+  warnings: ValidationIssue[],
+): void {
+  const heuristic = asObject(value, base, errors);
+  if (heuristic === null) return;
+  warnUnknown(heuristic, TIME_BUCKET_HEURISTIC_KEYS, base, warnings);
+
+  const keys = Object.keys(heuristic).filter((key) =>
+    (TIME_BUCKET_HEURISTIC_KEYS as readonly string[]).includes(key),
+  );
+  const canonical = TIME_BUCKET_HEURISTIC_KEYS.filter((key) => keys.includes(key));
+  if (keys.join(",") !== canonical.join(",")) {
+    errors.push({
+      path: base,
+      message: `buckets must appear in order: ${TIME_BUCKET_HEURISTIC_KEYS.join(", ")}`,
+    });
+  }
+
+  for (const bucket of TIME_BUCKET_HEURISTIC_KEYS) {
+    const bucketPath = pointer(base, bucket);
+    const threshold = asObject(heuristic[bucket], bucketPath, errors);
+    if (threshold === null) continue;
+    warnUnknown(threshold, TIME_BUCKET_THRESHOLD_KEYS, bucketPath, warnings);
+    checkNumber(threshold["max_files"], pointer(bucketPath, "max_files"), errors, {
+      integer: true,
+      min: 1,
+    });
+    checkNumber(threshold["max_chars"], pointer(bucketPath, "max_chars"), errors, {
+      integer: true,
+      min: 1,
+    });
+  }
+}
+
 function validateLabeler(obj: Record<string, unknown>, errors: ValidationIssue[], warnings: ValidationIssue[]): void {
   const base = "/labeler";
   warnUnknown(obj, LABELER_KEYS, base, warnings);
   checkString(obj["model"], pointer(base, "model"), errors, { nullable: true });
   checkString(obj["endpoint"], pointer(base, "endpoint"), errors, { nullable: true });
   checkString(obj["api_key_env"], pointer(base, "api_key_env"), errors, { nullable: true });
+  validateTimeBucketHeuristic(
+    obj["time_bucket_heuristic"],
+    pointer(base, "time_bucket_heuristic"),
+    errors,
+    warnings,
+  );
+  checkString(obj["prompt_extra"], pointer(base, "prompt_extra"), errors, { nullable: true });
 }
 
 function validateTaxonomy(obj: Record<string, unknown>, errors: ValidationIssue[], warnings: ValidationIssue[]): void {
@@ -623,29 +714,61 @@ function validateRules(
     checkString(rule["id"], pointer(base, "id"), errors);
     const condition = asObject(rule["if"], pointer(base, "if"), errors);
     if (condition !== null) {
-      warnUnknown(condition, CONDITION_KEYS, pointer(base, "if"), warnings);
+      const conditionPath = pointer(base, "if");
+      warnUnknown(condition, CONDITION_KEYS, conditionPath, warnings);
       const present = CONDITION_KEYS.filter((key) => hasOwn(condition, key));
-      if (present.length !== 1) {
+      if (present.length === 0) {
         errors.push({
-          path: pointer(base, "if"),
-          message: "must contain exactly one of constraint, label, files_mentioned_gte, description_chars_gte",
+          path: conditionPath,
+          message:
+            "must contain at least one of constraint, label, files_mentioned_gte, " +
+            "description_chars_gte, time_bucket, language, has_repro, cross_file",
         });
       }
-      const only = present[0];
-      if (only === "constraint") {
-        checkString(condition["constraint"], pointer(pointer(base, "if"), "constraint"), errors);
-      } else if (only === "label") {
-        checkEnum(condition["label"], LABELS, pointer(pointer(base, "if"), "label"), errors);
-      } else if (only === "files_mentioned_gte") {
-        checkNumber(condition["files_mentioned_gte"], pointer(pointer(base, "if"), "files_mentioned_gte"), errors, {
-          integer: true,
-          min: 0,
-        });
-      } else if (only === "description_chars_gte") {
-        checkNumber(condition["description_chars_gte"], pointer(pointer(base, "if"), "description_chars_gte"), errors, {
-          integer: true,
-          min: 0,
-        });
+
+      if (hasOwn(condition, "constraint")) {
+        checkString(condition["constraint"], pointer(conditionPath, "constraint"), errors);
+      }
+      if (hasOwn(condition, "label")) {
+        checkEnum(condition["label"], LABELS, pointer(conditionPath, "label"), errors);
+      }
+      if (hasOwn(condition, "files_mentioned_gte")) {
+        checkNumber(
+          condition["files_mentioned_gte"],
+          pointer(conditionPath, "files_mentioned_gte"),
+          errors,
+          { integer: true, min: 0 },
+        );
+      }
+      if (hasOwn(condition, "description_chars_gte")) {
+        checkNumber(
+          condition["description_chars_gte"],
+          pointer(conditionPath, "description_chars_gte"),
+          errors,
+          { integer: true, min: 0 },
+        );
+      }
+      if (hasOwn(condition, "time_bucket")) {
+        checkEnum<TimeBucket>(
+          condition["time_bucket"],
+          TIME_BUCKETS,
+          pointer(conditionPath, "time_bucket"),
+          errors,
+        );
+      }
+      if (hasOwn(condition, "language")) {
+        checkEnum<Language>(
+          condition["language"],
+          LANGUAGES,
+          pointer(conditionPath, "language"),
+          errors,
+        );
+      }
+      if (hasOwn(condition, "has_repro")) {
+        checkBoolean(condition["has_repro"], pointer(conditionPath, "has_repro"), errors);
+      }
+      if (hasOwn(condition, "cross_file")) {
+        checkBoolean(condition["cross_file"], pointer(conditionPath, "cross_file"), errors);
       }
     }
     const then = checkString(rule["then"], pointer(base, "then"), errors);
@@ -885,6 +1008,8 @@ function validatePolicyInternal(
       }
     }
   }
+
+  checkHeuristicBucketOrder(input["labeler"], errors);
 
   const merged = deepMerge(defaultPolicy(), input);
   if (!isPlainObject(merged)) {

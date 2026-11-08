@@ -17,11 +17,13 @@ import {
   DISPATCH_STATUSES,
   EVENT_TYPES,
   LABELS,
+  LANGUAGES,
   OUTCOMES,
   RATINGS,
   REDISPATCH_KINDS,
   REJECT_REASONS,
   REVIEW_VERDICTS,
+  TIME_BUCKETS,
   VERDICTS,
 } from "./types.js";
 import type {
@@ -30,12 +32,15 @@ import type {
   EventType,
   EvenerEvent,
   Label,
+  Language,
   Outcome,
+  PreFeatures,
   Rating,
   RouteDecidedPayload,
   TaskCreatedPayload,
   TaskRow,
   TaskState,
+  TimeBucket,
 } from "./types.js";
 import { ensureDir } from "./util.js";
 
@@ -110,9 +115,20 @@ CREATE TABLE tasks (
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);  -- schema_version, etc.
 `;
 
-const MIGRATIONS: Readonly<Record<number, string>> = { 1: MIGRATION_1 };
+const MIGRATIONS: Readonly<Record<number, string>> = {
+  1: MIGRATION_1,
+  2: `
+ALTER TABLE tasks ADD COLUMN language TEXT;
+ALTER TABLE tasks ADD COLUMN has_repro INTEGER;
+ALTER TABLE tasks ADD COLUMN cross_file INTEGER;
+ALTER TABLE tasks ADD COLUMN time_bucket TEXT;
+UPDATE tasks SET has_repro = 0 WHERE has_repro IS NULL;
+UPDATE tasks SET cross_file = 0 WHERE cross_file IS NULL;
+UPDATE tasks SET time_bucket = 'unknown' WHERE time_bucket IS NULL;
+`,
+};
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 function tableExists(db: DatabaseSync, name: string): boolean {
   const row = db
@@ -231,6 +247,18 @@ function checkNumber(
   }
 }
 
+function checkBoolean(
+  obj: Record<string, unknown>,
+  key: string,
+  path: string,
+  errors: string[],
+): void {
+  const value = obj[key];
+  if (typeof value !== "boolean") {
+    errorAt(errors, path, "must be a boolean");
+  }
+}
+
 function checkEnum(
   obj: Record<string, unknown>,
   key: string,
@@ -310,6 +338,20 @@ function validateTaskCreated(data: Record<string, unknown>, errors: string[]): v
       min: 0,
       nullable: true,
     });
+    // The stratification fields are optional so events written before schema
+    // version 2 keep loading; they are validated when present.
+    if (features["language"] !== undefined) {
+      checkEnum(features, "language", "/data/pre_features/language", LANGUAGES, errors, true);
+    }
+    if (features["has_repro"] !== undefined) {
+      checkBoolean(features, "has_repro", "/data/pre_features/has_repro", errors);
+    }
+    if (features["cross_file"] !== undefined) {
+      checkBoolean(features, "cross_file", "/data/pre_features/cross_file", errors);
+    }
+    if (features["time_bucket"] !== undefined) {
+      checkEnum(features, "time_bucket", "/data/pre_features/time_bucket", TIME_BUCKETS, errors);
+    }
   }
   checkEnum(data, "analysis_label", "/data/analysis_label", LABELS, errors);
   checkString(data, "labeler_model", "/data/labeler_model", errors);
@@ -524,6 +566,18 @@ function validateEvent(input: unknown): EvenerEvent {
 
 type CreatedData = TaskCreatedPayload & { arm?: string | null };
 
+function projectedLanguage(value: unknown): Language | null {
+  return typeof value === "string" && (LANGUAGES as readonly string[]).includes(value)
+    ? (value as Language)
+    : null;
+}
+
+function projectedTimeBucket(value: unknown): TimeBucket {
+  return typeof value === "string" && (TIME_BUCKETS as readonly string[]).includes(value)
+    ? (value as TimeBucket)
+    : "unknown";
+}
+
 /**
  * Apply one event to a task row. Returns a new row (inputs are never mutated)
  * or null when the event cannot be projected because the task is unknown.
@@ -531,6 +585,9 @@ type CreatedData = TaskCreatedPayload & { arm?: string | null };
 export function applyProjection(row: TaskRow | null, ev: EvenerEvent): TaskRow | null {
   if (ev.type === "task.created") {
     const data = ev.data as CreatedData;
+    // Events written before schema version 2 omit the new fields; treat them
+    // as null/false/false/"unknown".
+    const features = data.pre_features as Partial<PreFeatures>;
     return {
       task_id: ev.task_id,
       created_ts: ev.ts,
@@ -538,6 +595,10 @@ export function applyProjection(row: TaskRow | null, ev: EvenerEvent): TaskRow |
       host: ev.host,
       host_session_id: ev.host_session_id,
       analysis_label: data.analysis_label,
+      language: projectedLanguage(features.language),
+      has_repro: features.has_repro === true,
+      cross_file: features.cross_file === true,
+      time_bucket: projectedTimeBucket(features.time_bucket),
       arm: data.arm ?? null,
       policy_version: ev.policy_version,
       current_round: 1,
@@ -620,7 +681,8 @@ export function applyProjection(row: TaskRow | null, ev: EvenerEvent): TaskRow |
 // ---------------------------------------------------------------------------
 
 const TASK_COLUMNS =
-  "task_id, created_ts, closed_ts, host, host_session_id, analysis_label, arm, " +
+  "task_id, created_ts, closed_ts, host, host_session_id, analysis_label, " +
+  "language, has_repro, cross_file, time_bucket, arm, " +
   "policy_version, current_round, current_target, state, outcome, first_pass, " +
   "total_cost_usd, total_wall_ms, rating, overridden";
 
@@ -640,6 +702,10 @@ function mapTaskRow(row: Record<string, unknown>): TaskRow {
     host: String(row["host"]),
     host_session_id: nullableString(row["host_session_id"]),
     analysis_label: String(row["analysis_label"]) as Label,
+    language: nullableString(row["language"]) as Language | null,
+    has_repro: Number(row["has_repro"] ?? 0) === 1,
+    cross_file: Number(row["cross_file"] ?? 0) === 1,
+    time_bucket: (nullableString(row["time_bucket"]) ?? "unknown") as TimeBucket,
     arm: nullableString(row["arm"]),
     policy_version: String(row["policy_version"]),
     current_round: Number(row["current_round"]),
@@ -846,11 +912,13 @@ class SqliteStore implements Store {
       .prepare(
         "INSERT INTO tasks (" +
           TASK_COLUMNS +
-          ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+          ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
           "ON CONFLICT(task_id) DO UPDATE SET " +
           "created_ts = excluded.created_ts, closed_ts = excluded.closed_ts, " +
           "host = excluded.host, host_session_id = excluded.host_session_id, " +
-          "analysis_label = excluded.analysis_label, arm = excluded.arm, " +
+          "analysis_label = excluded.analysis_label, language = excluded.language, " +
+          "has_repro = excluded.has_repro, cross_file = excluded.cross_file, " +
+          "time_bucket = excluded.time_bucket, arm = excluded.arm, " +
           "policy_version = excluded.policy_version, " +
           "current_round = excluded.current_round, " +
           "current_target = excluded.current_target, state = excluded.state, " +
@@ -866,6 +934,10 @@ class SqliteStore implements Store {
         task.host,
         task.host_session_id,
         task.analysis_label,
+        task.language,
+        task.has_repro ? 1 : 0,
+        task.cross_file ? 1 : 0,
+        task.time_bucket,
         task.arm,
         task.policy_version,
         task.current_round,

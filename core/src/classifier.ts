@@ -8,7 +8,7 @@
  * transport but never sees the policy.
  */
 
-import { LABELS } from "./types.js";
+import { LABELS, TIME_BUCKET_HEURISTIC_KEYS } from "./types.js";
 import type {
   ArmPolicy,
   ClassifierConfig,
@@ -16,6 +16,7 @@ import type {
   LabelerConfig,
   PreFeatures,
   Taxonomy,
+  TimeBucket,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -140,6 +141,10 @@ export function renderClassifierPrompt(arm: ArmPolicy, task: TaskFeatures): Rend
     `label: ${task.label}`,
     `description_chars: ${task.pre_features.description_chars}`,
     `files_mentioned: ${task.pre_features.files_mentioned}`,
+    `language: ${task.pre_features.language ?? "null"}`,
+    `has_repro: ${task.pre_features.has_repro}`,
+    `cross_file: ${task.pre_features.cross_file}`,
+    `time_bucket: ${task.pre_features.time_bucket}`,
     `constraints: ${JSON.stringify(task.constraints)}`,
   ];
   if (task.excerpt !== null) {
@@ -488,11 +493,27 @@ function resolveLabelerTransport(
 
 /**
  * Label a task with the fixed taxonomy. The prompt never mentions the routing
- * policy. Any transport or validation failure yields `"unknown"`.
+ * policy. Any transport or validation failure yields an `unknown` label and a
+ * null time bucket.
  *
  * `classifier` supplies the endpoint/key/timeout fallback when the labeler
  * config leaves them null (spec §5).
  */
+export interface LabelModelResult {
+  label: Label;
+  time_bucket: TimeBucket | null;
+}
+
+function parseTimeBucket(value: unknown): TimeBucket | null {
+  if (
+    typeof value === "string" &&
+    (TIME_BUCKET_HEURISTIC_KEYS as readonly string[]).includes(value)
+  ) {
+    return value as TimeBucket;
+  }
+  return null;
+}
+
 export async function labelWithModel(
   policyLabeler: LabelerConfig,
   taxonomy: Taxonomy,
@@ -500,16 +521,22 @@ export async function labelWithModel(
   env: Readonly<Record<string, string | undefined>>,
   fetchImpl?: typeof fetch,
   classifier?: ClassifierConfig,
-): Promise<Label> {
+): Promise<LabelModelResult> {
   const model = policyLabeler.model;
-  if (model === null) return "unknown";
+  if (model === null) return { label: "unknown", time_bucket: null };
 
   const taxonomyLabels = taxonomy.labels.length > 0 ? taxonomy.labels : [...LABELS];
   const labels = taxonomyLabels.filter((label) => label !== "unknown");
   const transport = resolveLabelerTransport(policyLabeler, classifier);
+  const bucketDescription =
+    "lt15m (<15 min), 15m_1h (15 min-1 h), 1h_4h (1-4 h), gt4h (>4 h)";
+  const promptExtra =
+    policyLabeler.prompt_extra === null ? "" : `\n\n${policyLabeler.prompt_extra}`;
   const answer = `Classify this coding task into exactly one label from: ${labels.join(", ")}. ` +
-    'Answer {"label": "<label>"}.\n\nTask:\n' +
-    description;
+    `Also estimate the human time needed to complete it as exactly one time bucket: ${bucketDescription}. ` +
+    'Answer {"label": "<label>", "time_bucket": "<bucket>"}.\n\nTask:\n' +
+    description +
+    promptExtra;
 
   try {
     const response = await callChatCompletions({
@@ -528,11 +555,12 @@ export async function labelWithModel(
 
     const parsed = parseJsonObject(response.content);
     const label = parsed["label"];
+    const timeBucket = parseTimeBucket(parsed["time_bucket"]);
     if (typeof label === "string" && (LABELS as readonly string[]).includes(label)) {
-      return label as Label;
+      return { label: label as Label, time_bucket: timeBucket };
     }
-    return "unknown";
+    return { label: "unknown", time_bucket: null };
   } catch {
-    return "unknown";
+    return { label: "unknown", time_bucket: null };
   }
 }

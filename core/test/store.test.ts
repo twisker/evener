@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test, { type TestContext } from "node:test";
 import { applyProjection, openStore, StoreError } from "../src/store.js";
 import type { Store } from "../src/store.js";
@@ -66,7 +67,15 @@ function created(
     description_hash: "a".repeat(64),
     description_excerpt: null,
     repo_fingerprint: null,
-    pre_features: { description_chars: 20, files_mentioned: 2, repo_files: null },
+    pre_features: {
+      description_chars: 20,
+      files_mentioned: 2,
+      repo_files: null,
+      language: "ts",
+      has_repro: false,
+      cross_file: true,
+      time_bucket: "lt15m",
+    },
     analysis_label: label,
     labeler_model: "heuristic",
     constraints: [],
@@ -277,4 +286,102 @@ test("applyProjection is pure and leaves unrelated events alone", () => {
     until: null,
   });
   assert.deepEqual(applyProjection(routedRow, circuit), routedRow);
+});
+
+const MIGRATION_1_DDL = `
+CREATE TABLE events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id TEXT UNIQUE NOT NULL, task_id TEXT NOT NULL, round INTEGER NOT NULL,
+  ts TEXT NOT NULL, type TEXT NOT NULL, host TEXT NOT NULL, host_session_id TEXT,
+  policy_version TEXT NOT NULL, schema_version INTEGER NOT NULL, data TEXT NOT NULL);
+CREATE INDEX events_task ON events(task_id, seq);
+CREATE INDEX events_type_ts ON events(type, ts);
+CREATE TABLE tasks (
+  task_id TEXT PRIMARY KEY, created_ts TEXT NOT NULL, closed_ts TEXT,
+  host TEXT NOT NULL, host_session_id TEXT, analysis_label TEXT NOT NULL,
+  arm TEXT, policy_version TEXT NOT NULL,
+  current_round INTEGER NOT NULL DEFAULT 1, current_target TEXT,
+  state TEXT NOT NULL, outcome TEXT, first_pass INTEGER,
+  total_cost_usd REAL NOT NULL DEFAULT 0, total_wall_ms INTEGER NOT NULL DEFAULT 0,
+  rating TEXT, overridden INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+`;
+
+test("new task.created stratification fields project and survive rebuild", (t) => {
+  const { store } = tempStore(t);
+  const taskId = uuid();
+
+  store.appendEvent(created(taskId, "bugfix"));
+
+  const task = store.getTask(taskId);
+  assert.ok(task !== null);
+  assert.equal(task.language, "ts");
+  assert.equal(task.has_repro, false);
+  assert.equal(task.cross_file, true);
+  assert.equal(task.time_bucket, "lt15m");
+
+  assert.equal(store.rebuildTasks(), 1);
+  assert.deepEqual(store.getTask(taskId), task);
+});
+
+test("an old-style task.created without the new fields still projects defaults", (t) => {
+  const { store } = tempStore(t);
+  const taskId = uuid();
+  const legacy = created(taskId);
+  const data = {
+    ...legacy.data,
+    pre_features: { description_chars: 12, files_mentioned: 1, repo_files: null },
+  };
+  store.appendEvent({ ...legacy, data } as unknown as EvenerEvent);
+
+  const task = store.getTask(taskId);
+  assert.ok(task !== null);
+  assert.equal(task.language, null);
+  assert.equal(task.has_repro, false);
+  assert.equal(task.cross_file, false);
+  assert.equal(task.time_bucket, "unknown");
+});
+
+test("opening a migration-1 database upgrades it to schema 2 and keeps rows", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "evener-store-migrate-"));
+  const dbPath = join(dir, "v1.sqlite");
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const legacy = new DatabaseSync(dbPath);
+  legacy.exec(MIGRATION_1_DDL);
+  legacy
+    .prepare("INSERT INTO meta(key, value) VALUES ('schema_version', '1')")
+    .run();
+  legacy
+    .prepare(
+      "INSERT INTO tasks (task_id, created_ts, host, analysis_label, policy_version, state) " +
+        "VALUES ('legacy-task', '2026-01-01T00:00:00.000Z', 'claude-code', 'bugfix', 'oldpolicy000', 'created')",
+    )
+    .run();
+  legacy.close();
+
+  const store = openStore(dbPath);
+  const task = store.getTask("legacy-task");
+  assert.ok(task !== null);
+  assert.equal(task.language, null);
+  assert.equal(task.has_repro, false);
+  assert.equal(task.cross_file, false);
+  assert.equal(task.time_bucket, "unknown");
+  store.close();
+
+  const upgraded = new DatabaseSync(dbPath);
+  const meta = upgraded
+    .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
+    .get();
+  assert.equal(Number(meta?.["value"]), 2);
+  const row = upgraded
+    .prepare(
+      "SELECT language, has_repro, cross_file, time_bucket FROM tasks WHERE task_id = 'legacy-task'",
+    )
+    .get();
+  assert.equal(row?.["language"], null);
+  assert.equal(row?.["has_repro"], 0);
+  assert.equal(row?.["cross_file"], 0);
+  assert.equal(row?.["time_bucket"], "unknown");
+  upgraded.close();
 });

@@ -8,8 +8,9 @@
  */
 
 import { labelWithModel } from "./classifier.js";
+import { timeBucketHeuristic } from "./features.js";
 import { LABELS } from "./types.js";
-import type { Label, Policy } from "./types.js";
+import type { Label, Policy, PreFeatures, TimeBucket } from "./types.js";
 
 const BUGFIX = /fix|bug|crash|error|regression|broken/;
 const MECHANICAL = /rename|move|migrate|format|lint|boilerplate|bulk|batch|replace all/;
@@ -43,25 +44,40 @@ export interface LabelerIO {
   fetchImpl?: typeof fetch;
 }
 
+export interface LabelTaskResult {
+  label: Label;
+  labeler_model: string;
+  time_bucket: TimeBucket;
+}
+
 function isLabel(value: string): value is Label {
   return (LABELS as readonly string[]).includes(value);
 }
 
 /**
- * Label a task. With no model configured this is the deterministic heuristic;
- * with one configured the fixed-prompt model is used and a failure falls back
- * to the heuristic. Labeling must never fail a task.
+ * Label a task and estimate its time bucket. With no model configured this is
+ * the deterministic heuristic; with one configured the fixed-prompt model is
+ * used and a failure falls back to the heuristic. An invalid model time bucket
+ * alone falls back to the heuristic bucket. Labeling must never fail a task.
+ *
+ * `preFeatures` is used for the heuristic fallback; when omitted the bucket is
+ * `"unknown"` (the caller normally passes the computed features).
  */
 export async function labelTask(
   description: string,
   policy: Policy,
   io: LabelerIO = {},
-): Promise<{ label: Label; labeler_model: string }> {
+  preFeatures?: Pick<PreFeatures, "files_mentioned" | "description_chars">,
+): Promise<LabelTaskResult> {
   const heuristic = labelHeuristic(description);
+  const heuristicBucket: TimeBucket =
+    preFeatures === undefined
+      ? "unknown"
+      : timeBucketHeuristic(preFeatures, policy.labeler.time_bucket_heuristic);
   const model = policy.labeler.model;
 
   if (model === null) {
-    return { label: heuristic, labeler_model: "heuristic" };
+    return { label: heuristic, labeler_model: "heuristic", time_bucket: heuristicBucket };
   }
 
   try {
@@ -75,12 +91,16 @@ export async function labelTask(
     );
     // `labelWithModel` reports failures as `unknown`; keep the deterministic
     // heuristic as the labeler's fallback in that case.
-    if (isLabel(result) && result !== "unknown") {
-      return { label: result, labeler_model: model };
+    if (isLabel(result.label) && result.label !== "unknown") {
+      return {
+        label: result.label,
+        labeler_model: model,
+        time_bucket: result.time_bucket ?? heuristicBucket,
+      };
     }
   } catch {
     // Fall through to the heuristic; labeling must never fail a task.
   }
 
-  return { label: heuristic, labeler_model: "heuristic" };
+  return { label: heuristic, labeler_model: "heuristic", time_bucket: heuristicBucket };
 }

@@ -14,6 +14,11 @@ labeler:
   model: null                      # null → heuristic
   endpoint: null                   # null → reuse classifier endpoint/key
   api_key_env: null
+  time_bucket_heuristic:
+    lt15m:  {max_files: 1, max_chars: 400}
+    15m_1h: {max_files: 3, max_chars: 1500}
+    1h_4h:  {max_files: 8, max_chars: 5000}
+  prompt_extra: null               # free text appended to the model labeler prompt
 
 taxonomy:
   labels: [bugfix, feature, refactor, test, docs, mechanical, question]   # closed; "unknown" always allowed
@@ -42,10 +47,12 @@ targets:
     weaknesses: [refactor]
     enabled: true
 
-rules:                              # evaluated in order; first match wins; locked = user cannot override to a non-host target
+rules:                              # evaluated in order; first match wins; all conditions in `if` must hold (AND); locked = user cannot override to a non-host target
   - {id: private, if: {constraint: private_path}, then: host, locked: true}
   - {id: question, if: {label: question}, then: host}
   - {id: wide, if: {files_mentioned_gte: 8}, then: host}
+  - {id: long_task, if: {time_bucket: gt4h}, then: host}
+  - {id: bugfix_no_repro_cross_file, if: {label: bugfix, has_repro: false, cross_file: true}, then: host}
 
 fallback_table:                     # used when classifier.model is null, times out, or errors
   mechanical: dsh

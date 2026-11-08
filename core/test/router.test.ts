@@ -59,7 +59,15 @@ function seedTask(
     description_hash: options.descriptionHash ?? "a".repeat(64),
     description_excerpt: options.excerpt ?? null,
     repo_fingerprint: null,
-    pre_features: { description_chars: 120, files_mentioned: 2, repo_files: 10 },
+    pre_features: {
+      description_chars: 120,
+      files_mentioned: 2,
+      repo_files: 10,
+      language: "ts",
+      has_repro: false,
+      cross_file: true,
+      time_bucket: "1h_4h",
+    },
     analysis_label: label,
     labeler_model: "heuristic",
     constraints: options.constraints ?? [],
@@ -173,7 +181,15 @@ function inputFor(
 test("evaluateRules applies the first matching condition", () => {
   const features = {
     label: "bugfix" as const,
-    pre_features: { description_chars: 10, files_mentioned: 2, repo_files: null },
+    pre_features: {
+      description_chars: 10,
+      files_mentioned: 2,
+      repo_files: null,
+      language: "ts" as const,
+      has_repro: false,
+      cross_file: true,
+      time_bucket: "lt15m" as const,
+    },
     constraints: [],
     excerpt: null,
   };
@@ -195,6 +211,62 @@ test("evaluateRules applies the first matching condition", () => {
   assert.ok(match !== null);
   assert.equal(match.rule.id, "bug");
   assert.equal(match.target, "codex");
+});
+
+test("an AND rule matches only when every condition holds", () => {
+  const features = {
+    label: "bugfix" as const,
+    pre_features: {
+      description_chars: 500,
+      files_mentioned: 3,
+      repo_files: null,
+      language: "ts" as const,
+      has_repro: false,
+      cross_file: true,
+      time_bucket: "1h_4h" as const,
+    },
+    constraints: [],
+    excerpt: null,
+  };
+
+  const rule = {
+    id: "bugfix_no_repro_cross_file",
+    if: { label: "bugfix" as const, has_repro: false, cross_file: true },
+    then: "host",
+  };
+
+  const match = evaluateRules([rule], features);
+  assert.equal(match?.rule.id, "bugfix_no_repro_cross_file");
+
+  const withRepro = {
+    ...features,
+    pre_features: { ...features.pre_features, has_repro: true },
+  };
+  assert.equal(evaluateRules([rule], withRepro), null);
+
+  const singleFile = {
+    ...features,
+    pre_features: { ...features.pre_features, cross_file: false },
+  };
+  assert.equal(evaluateRules([rule], singleFile), null);
+
+  const wrongLabel = { ...features, label: "feature" as const };
+  assert.equal(evaluateRules([rule], wrongLabel), null);
+
+  assert.equal(
+    evaluateRules(
+      [{ id: "long", if: { time_bucket: "gt4h" }, then: "host" }],
+      features,
+    ),
+    null,
+  );
+  assert.equal(
+    evaluateRules(
+      [{ id: "ts", if: { language: "ts", time_bucket: "1h_4h" }, then: "host" }],
+      features,
+    )?.rule.id,
+    "ts",
+  );
 });
 
 // ---------------------------------------------------------------------------

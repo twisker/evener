@@ -102,7 +102,7 @@ task.created:
   description_hash: string           # sha256 hex
   description_excerpt: string|null   # first 200 chars, only if privacy.store_description_excerpt
   repo_fingerprint: string|null      # sha256 of git remote url + root path
-  pre_features: {description_chars: int, files_mentioned: int, repo_files: int|null}
+  pre_features: {description_chars: int, files_mentioned: int, repo_files: int|null, language: ts|js|py|go|rs|java|kt|rb|php|cs|cpp|c|swift|sh|sql|md|yaml|json|other|null, has_repro: bool, cross_file: bool, time_bucket: lt15m|15m_1h|1h_4h|gt4h|unknown}
   analysis_label: bugfix|feature|refactor|test|docs|mechanical|question|unknown
   labeler_model: string              # "heuristic" or model id
   constraints: [string]              # free-form tags from host, e.g. private_path
@@ -208,6 +208,11 @@ labeler:
   model: null                      # null → heuristic
   endpoint: null                   # null → reuse classifier endpoint/key
   api_key_env: null
+  time_bucket_heuristic:
+    lt15m:  {max_files: 1, max_chars: 400}
+    15m_1h: {max_files: 3, max_chars: 1500}
+    1h_4h:  {max_files: 8, max_chars: 5000}
+  prompt_extra: null               # free text appended to the model labeler prompt
 
 taxonomy:
   labels: [bugfix, feature, refactor, test, docs, mechanical, question]   # closed; "unknown" always allowed
@@ -236,10 +241,12 @@ targets:
     weaknesses: [refactor]
     enabled: true
 
-rules:                              # evaluated in order; first match wins; locked = user cannot override to a non-host target
+rules:                              # evaluated in order; first match wins; all conditions in `if` must hold (AND); locked = user cannot override to a non-host target
   - {id: private, if: {constraint: private_path}, then: host, locked: true}
   - {id: question, if: {label: question}, then: host}
   - {id: wide, if: {files_mentioned_gte: 8}, then: host}
+  - {id: long_task, if: {time_bucket: gt4h}, then: host}
+  - {id: bugfix_no_repro_cross_file, if: {label: bugfix, has_repro: false, cross_file: true}, then: host}
 
 fallback_table:                     # used when classifier.model is null, times out, or errors
   mechanical: dsh
@@ -375,7 +382,7 @@ be in state `routed` with `current_target: host`; host rounds never touch the ci
 ## 9. Report (`evener report`)
 
 ```
-evener report [--since 14d|YYYY-MM-DD] [--by label] [--format md|json] [--out FILE]
+evener report [--since 14d|YYYY-MM-DD] [--by label|language|time_bucket|has_repro|cross_file] [--format md|json] [--out FILE]
 ```
 Sections exactly as PRD §5. Definitions:
 - Quality score per arm/target = Σ w·metric with `quality_weights`; `first_pass` = share of closed tasks accepted in round 1; `final_pass` = share accepted at all; `feedback` = (ups − downs)/(ups+downs) mapped to [0,1]; `revert` = 1 − mean reverted_ratio. If no feedback events in the window, redistribute 0.3 proportionally to first/final. If no revert events, redistribute 0.1 the same way.

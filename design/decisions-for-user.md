@@ -21,3 +21,6 @@ without an answer. Review after v1 is complete.
 | D14 | Store description excerpt | off | `policy.privacy.store_description_excerpt` | Privacy vs. debuggability. |
 | D15 | Weekly report scheduling | documented cron line, not automated | — | Evener does not schedule itself (non-goal). |
 | D16 | Package name on npm | `evener` (unverified availability) | `core/package.json` | Might be taken. |
+| D17 | Host round cost | `evener done` without `--cost-usd` records cost 0 with `cost_unknown: true` | skill text: pass an estimate, or leave unknown | Claude Code does not expose per-turn cost to the model; any number would be a guess. Reports therefore understate host CPAT. |
+| D18 | Skill chattiness | 8 CLI calls per task (create, decide, dispatch, accept, next, close + reads) | `SKILL.md`; could add a combined `evener run` command | Measured: a trivial delegated task cost $0.76 of host tokens vs $0.0008 of dsh. A single `evener run --description-file --prompt-file` that does create+decide+dispatch would cut round trips but hides the decision from the host. Product call. |
+| D19 | dsh session litter | Each dispatch leaves a persisted dsh session under `~/.dsh/sessions/` | none yet | Could pass a flag if dsh offers an ephemeral mode (codex has `--ephemeral`). |

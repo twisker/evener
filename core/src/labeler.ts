@@ -1,12 +1,13 @@
 /**
  * Fixed-taxonomy analysis labeler.
  *
- * The heuristic path is fully implemented here. T3 wires the model path by
- * passing a `labelerModelCall` backed by `classifier.ts`; until then the model
- * branch is intentionally inert and falls back to the heuristic. This label
- * never influences routing.
+ * With `labeler.model` configured the description is sent through the shared
+ * classifier transport with a fixed prompt; otherwise the deterministic
+ * keyword heuristic is used. Any model failure also falls back to the
+ * heuristic. This label never influences routing.
  */
 
+import { labelWithModel } from "./classifier.js";
 import { LABELS } from "./types.js";
 import type { Label, Policy } from "./types.js";
 
@@ -36,45 +37,45 @@ export function labelHeuristic(description: string): Label {
   return "unknown";
 }
 
-/** Inputs the eventual model-backed labeler will need. */
+/** Inputs available to the model-backed labeler. */
 export interface LabelerIO {
   env?: Readonly<Record<string, string | undefined>>;
+  fetchImpl?: typeof fetch;
+}
+
+function isLabel(value: string): value is Label {
+  return (LABELS as readonly string[]).includes(value);
 }
 
 /**
- * Optional model call. T3 supplies this from `classifier.ts`; `null` means the
- * model could not produce a usable label and the heuristic should be used.
- */
-export type LabelerModelCall = (
-  description: string,
-  policy: Policy,
-  io: LabelerIO,
-) => Promise<Label | null>;
-
-function isLabel(value: unknown): value is Label {
-  return typeof value === "string" && (LABELS as readonly string[]).includes(value);
-}
-
-/**
- * Label a task. With no model configured, or no model call wired yet, this is
- * the deterministic heuristic. A failed model call also falls back.
+ * Label a task. With no model configured this is the deterministic heuristic;
+ * with one configured the fixed-prompt model is used and a failure falls back
+ * to the heuristic. Labeling must never fail a task.
  */
 export async function labelTask(
   description: string,
   policy: Policy,
   io: LabelerIO = {},
-  labelerModelCall?: LabelerModelCall,
 ): Promise<{ label: Label; labeler_model: string }> {
   const heuristic = labelHeuristic(description);
   const model = policy.labeler.model;
 
-  if (model === null || labelerModelCall === undefined) {
+  if (model === null) {
     return { label: heuristic, labeler_model: "heuristic" };
   }
 
   try {
-    const result = await labelerModelCall(description, policy, io);
-    if (isLabel(result)) {
+    const result = await labelWithModel(
+      policy.labeler,
+      policy.taxonomy,
+      description,
+      io.env ?? {},
+      io.fetchImpl,
+      policy.classifier,
+    );
+    // `labelWithModel` reports failures as `unknown`; keep the deterministic
+    // heuristic as the labeler's fallback in that case.
+    if (isLabel(result) && result !== "unknown") {
       return { label: result, labeler_model: model };
     }
   } catch {

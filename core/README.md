@@ -22,8 +22,8 @@ node core/dist/src/cli.js policy hash
 ```
 
 `init` creates `$EVENER_HOME` (default `~/.evener`) with `policy.yaml`,
-`pricing.yaml`, and empty `runs/` and `reports/` directories. It does not create
-the SQLite database.
+`pricing.yaml`, empty `runs/` and `reports/` directories, and the SQLite database
+`evener.sqlite` (WAL mode) with its schema.
 
 Global flags: `--home DIR`, `--format json|md`, `--quiet`.
 

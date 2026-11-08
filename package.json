@@ -9,7 +9,8 @@
   ],
   "scripts": {
     "build": "npm run build -w core",
-    "test": "npm run test -w core"
+    "test": "npm run test -w core && npm run test:adapter",
+    "test:adapter": "npm test -w adapters/claude-code"
   },
   "devDependencies": {
     "@types/node": "^22.13.0",

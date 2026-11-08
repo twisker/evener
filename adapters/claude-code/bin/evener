@@ -1,0 +1,71 @@
+#!/bin/sh
+# Evener launcher for the Claude Code plugin.
+#
+# Resolution order:
+#   1. $EVENER_BIN
+#   2. <plugin root>/../../core/dist/src/cli.js (monorepo checkout)
+#   3. a globally installed `evener` that is not this script
+#   4. npx -y evener
+set -u
+
+usage() {
+  cat <<'EOF'
+evener — route delegated coding tasks to the cheapest capable harness.
+
+Usage: evener <command> [options]
+
+Commands:
+  init                    Create $EVENER_HOME, policy.yaml, pricing.yaml and the database
+  task create             Record a task description (--description-file)
+  decide --task T         Choose a target for the task
+  dispatch --task T       Run the chosen target (--prompt-file)
+  accept --task T         Record the host's acceptance verdict
+  next --task T           Ask what to do after acceptance
+  close --task T          Close the task and record totals
+  feedback --task T       Record a thumbs up/down
+  override --task T       Override the chosen target
+  report                  Show routing and cost data
+  tasks                   List tasks
+  sweep                   Close abandoned tasks for a host session
+
+The launcher resolves the CLI from $EVENER_BIN, the monorepo build at
+core/dist/src/cli.js, a global `evener`, or `npx -y evener`, in that order.
+See the Evener plugin README and design/spec-v1.md for command details.
+EOF
+}
+
+case "${1:-}" in
+  --help|-h)
+    usage
+    exit 0
+    ;;
+esac
+
+self_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+self_path="$self_dir/$(basename -- "$0")"
+plugin_root=$(CDPATH= cd -- "$self_dir/.." && pwd)
+core_cli="$plugin_root/../../core/dist/src/cli.js"
+
+if [ -n "${EVENER_BIN:-}" ]; then
+  exec "$EVENER_BIN" "$@"
+fi
+
+if [ -f "$core_cli" ]; then
+  exec node "$core_cli" "$@"
+fi
+
+if global_evener=$(command -v evener 2>/dev/null); then
+  case "$global_evener" in
+    */*)
+      global_path=$(CDPATH= cd -- "$(dirname -- "$global_evener")" 2>/dev/null && pwd)/$(basename -- "$global_evener")
+      ;;
+    *)
+      global_path=$global_evener
+      ;;
+  esac
+  if [ -x "$global_evener" ] && [ "$global_path" != "$self_path" ] && [ ! "$global_path" -ef "$self_path" ]; then
+    exec "$global_evener" "$@"
+  fi
+fi
+
+exec npx -y evener "$@"

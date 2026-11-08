@@ -1,0 +1,13 @@
+{
+  "name": "evener",
+  "owner": {
+    "name": "Evener contributors"
+  },
+  "plugins": [
+    {
+      "name": "evener",
+      "source": "./adapters/claude-code",
+      "description": "Route delegated coding tasks to the cheapest capable harness and record cost, time and quality."
+    }
+  ]
+}

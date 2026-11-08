@@ -199,7 +199,6 @@ interface RedispatchRecord {
 
 interface TaskData {
   task: TaskRow;
-  initialTarget: string | null;
   rounds: Map<number, RoundData>;
   dispatches: DispatchRecord[];
   acceptances: AcceptanceRecord[];
@@ -209,6 +208,34 @@ interface TaskData {
   reverts: PostRevertPayload[];
   reviewerCostUsd: number;
   closed: TaskClosedPayload | null;
+}
+
+/**
+ * The target that actually ran a round.
+ *
+ * `dispatch.started` is authoritative because `user.override` can change the
+ * target between `route.decided` and dispatch. Only when no dispatch target was
+ * recorded (e.g. the task was abandoned before dispatch) fall back to the last
+ * `route.decided` / `user.override` in that round.
+ */
+export function roundTarget(events: readonly EvenerEvent[], round: number): string | null {
+  let dispatched: string | null = null;
+  let routed: string | null = null;
+  for (const event of events) {
+    if (event.round !== round) continue;
+    switch (event.type) {
+      case "dispatch.started":
+        dispatched = event.data.target;
+        break;
+      case "route.decided":
+        routed = event.data.target;
+        break;
+      case "user.override":
+        routed = event.data.to;
+        break;
+    }
+  }
+  return dispatched ?? routed;
 }
 
 function roundFor(rounds: Map<number, RoundData>, round: number): RoundData {
@@ -252,47 +279,29 @@ function analyseTask(task: TaskRow, events: readonly EvenerEvent[], windowStart:
       case "route.decided": {
         const data: RouteDecidedPayload = event.data;
         const round = roundFor(rounds, event.round);
-        round.target = data.target;
         round.classifierCostUsd += data.classifier_cost_usd ?? 0;
         if (data.classifier_latency_ms !== null) {
           round.classifierLatencyMs = data.classifier_latency_ms;
         }
         break;
       }
-      case "dispatch.started": {
-        const round = roundFor(rounds, event.round);
-        if (round.target === null) round.target = event.data.target;
+      case "dispatch.started":
+        roundFor(rounds, event.round);
         break;
-      }
       case "dispatch.finished": {
         const round = roundFor(rounds, event.round);
         round.dispatch = event.data;
-        dispatches.push({
-          round: event.round,
-          target: round.target ?? task.current_target ?? "unknown",
-          data: event.data,
-        });
         break;
       }
       case "acceptance.finished": {
         const round = roundFor(rounds, event.round);
         round.acceptance = event.data;
-        const target = round.target ?? task.current_target ?? "unknown";
-        acceptances.push({ round: event.round, target, data: event.data });
         reviewerCostUsd += event.data.reviewer_cost_usd;
-        if (event.data.verdict === "rejected") {
-          rejections.push({
-            round: event.round,
-            target,
-            reason: event.data.reject_reason ?? "other",
-          });
-        }
         break;
       }
       case "task.redispatch": {
         redispatch.push({ round: event.round, data: event.data });
-        const round = roundFor(rounds, event.round);
-        if (round.target === null) round.target = event.data.next_target;
+        roundFor(rounds, event.round);
         break;
       }
       case "task.closed":
@@ -310,12 +319,30 @@ function analyseTask(task: TaskRow, events: readonly EvenerEvent[], windowStart:
     }
   }
 
-  const firstRound = rounds.get(1);
-  const initialTarget = firstRound?.target ?? task.current_target;
+  // Attribute every round to the target from its dispatch events (or the last
+  // route/override when the task never reached dispatch).
+  for (const round of rounds.values()) {
+    round.target = roundTarget(events, round.round);
+  }
+  for (const round of rounds.values()) {
+    const target = round.target ?? task.current_target ?? "unknown";
+    if (round.dispatch !== null) {
+      dispatches.push({ round: round.round, target, data: round.dispatch });
+    }
+    if (round.acceptance !== null) {
+      acceptances.push({ round: round.round, target, data: round.acceptance });
+      if (round.acceptance.verdict === "rejected") {
+        rejections.push({
+          round: round.round,
+          target,
+          reason: round.acceptance.reject_reason ?? "other",
+        });
+      }
+    }
+  }
 
   return {
     task,
-    initialTarget,
     rounds,
     dispatches,
     acceptances,
@@ -518,6 +545,13 @@ function meanOf(values: readonly number[]): number | null {
   return mean(values);
 }
 
+function finalRound(task: TaskData): number {
+  let max = task.task.current_round;
+  if (task.closed !== null) max = Math.max(max, task.closed.total_rounds);
+  for (const round of task.rounds.keys()) max = Math.max(max, round);
+  return max;
+}
+
 function armForTask(task: TaskRow, experimentOn: boolean): string {
   if (!experimentOn) return "all";
   return task.arm ?? "all";
@@ -658,19 +692,40 @@ export function buildReport(
   const observedTargets = new Set<string>();
   for (const name of Object.keys(policy.targets)) observedTargets.add(name);
   for (const task of tasks) {
-    if (task.initialTarget !== null) observedTargets.add(task.initialTarget);
-    for (const dispatch of task.dispatches) observedTargets.add(dispatch.target);
-    for (const acceptance of task.acceptances) observedTargets.add(acceptance.target);
+    for (const round of task.rounds.values()) {
+      if (round.target !== null) observedTargets.add(round.target);
+    }
   }
   const targetNames = [...observedTargets].sort();
 
   const targets: TargetProfile[] = targetNames.map((target) => {
-    const targetTasks = tasks.filter((task) => task.initialTarget === target);
-    const closed = closedTasks(targetTasks);
-    const accepted = acceptedTasks(targetTasks);
-    const dispatches = tasks.flatMap((task) =>
-      task.dispatches.filter((dispatch) => dispatch.target === target),
+    const targetRounds: { task: TaskData; round: RoundData }[] = [];
+    for (const task of tasks) {
+      for (const round of task.rounds.values()) {
+        if (round.target === target) targetRounds.push({ task, round });
+      }
+    }
+    const closedTargetRounds = targetRounds.filter(
+      (entry) => entry.task.task.state === "closed",
     );
+    const closedTaskIds = new Set(
+      closedTargetRounds.map((entry) => entry.task.task.task_id),
+    );
+    const targetTasks = tasks.filter((task) => closedTaskIds.has(task.task.task_id));
+
+    const dispatches: DispatchFinishedPayload[] = [];
+    const roundCosts: number[] = [];
+    const closedRoundCosts: number[] = [];
+    for (const entry of targetRounds) {
+      const dispatch = entry.round.dispatch;
+      const acceptance = entry.round.acceptance;
+      if (dispatch !== null) dispatches.push(dispatch);
+      if (dispatch === null && acceptance === null) continue;
+      const cost = (dispatch?.cost_usd ?? 0) + (acceptance?.reviewer_cost_usd ?? 0);
+      roundCosts.push(cost);
+      if (entry.task.task.state === "closed") closedRoundCosts.push(cost);
+    }
+
     const rejections = tasks.flatMap((task) =>
       task.rejections.filter((rejection) => rejection.target === target),
     );
@@ -681,51 +736,59 @@ export function buildReport(
     }
 
     const latencies: number[] = [];
-    for (const task of tasks) {
-      for (const round of task.rounds.values()) {
-        if (round.target === target && round.classifierLatencyMs !== null) {
-          latencies.push(round.classifierLatencyMs);
-        }
+    for (const entry of targetRounds) {
+      if (entry.round.classifierLatencyMs !== null) {
+        latencies.push(entry.round.classifierLatencyMs);
       }
     }
 
     const failures = dispatches.filter(
-      (dispatch) => dispatch.data.status === "error" || dispatch.data.status === "timeout",
+      (dispatch) => dispatch.status === "error" || dispatch.status === "timeout",
     ).length;
-    const style = styleStats.get(target);
-    const quality = computeQuality(closed, weights, suspected);
+    const accepted = closedTargetRounds.filter(
+      (entry) => entry.round.acceptance?.verdict === "accepted",
+    ).length;
+    const firstRounds = closedTargetRounds.filter((entry) => entry.round.round === 1);
+    const finalRounds = closedTargetRounds.filter(
+      (entry) => entry.round.round === finalRound(entry.task),
+    );
     const firstPassRate =
-      closed.length > 0
-        ? closed.filter((task) => task.task.first_pass === 1).length / closed.length
+      firstRounds.length > 0
+        ? firstRounds.filter((entry) => entry.round.acceptance?.verdict === "accepted")
+            .length / firstRounds.length
         : null;
     const finalPassRate =
-      closed.length > 0
-        ? closed.filter((task) => task.task.outcome === "accepted").length / closed.length
+      finalRounds.length > 0
+        ? finalRounds.filter((entry) => entry.round.acceptance?.verdict === "accepted")
+            .length / finalRounds.length
         : null;
+    const style = styleStats.get(target);
+    const quality = computeQuality(targetTasks, weights, suspected);
+    const totalRoundCost = closedRoundCosts.reduce((sum, cost) => sum + cost, 0);
 
     return {
       target,
-      n: closed.length,
-      accepted: accepted.length,
+      n: closedTargetRounds.length,
+      accepted,
       dispatches: dispatches.length,
       first_pass_rate: firstPassRate,
       final_pass_rate: finalPassRate,
-      cpat: cpatFor(targetTasks),
+      cpat: accepted > 0 ? totalRoundCost / accepted : null,
       quality_score: quality?.quality_score ?? null,
       reject_reasons: rejectCounts,
       rejections: rejections.length,
       style_rejections: style?.style_rejections ?? 0,
       style_ratio: style?.style_ratio ?? null,
       style_suspected: style?.style_suspected ?? false,
-      mean_cost_usd: meanOf(dispatches.map((dispatch) => dispatch.data.cost_usd)),
-      mean_wall_ms: meanOf(dispatches.map((dispatch) => dispatch.data.wall_ms)),
+      mean_cost_usd: meanOf(roundCosts),
+      mean_wall_ms: meanOf(dispatches.map((dispatch) => dispatch.wall_ms)),
       failures,
       failure_rate: dispatches.length > 0 ? failures / dispatches.length : null,
       classifier_latency_p50_ms:
         latencies.length > 0 ? quantile(latencies, 0.5) : null,
       classifier_latency_p90_ms:
         latencies.length > 0 ? quantile(latencies, 0.9) : null,
-      insufficient: closed.length < 8,
+      insufficient: closedTargetRounds.length < 8,
     };
   });
 
@@ -901,16 +964,37 @@ export function buildReport(
     label: Label,
     target: string,
   ): { n: number; firstPass: number; cpat: number | null } => {
-    const cellTasks = closedTasks(
-      tasks.filter(
-        (task) => task.task.analysis_label === label && task.initialTarget === target,
-      ),
-    );
+    const cellRounds: { task: TaskData; round: RoundData }[] = [];
+    for (const task of tasks) {
+      if (task.task.analysis_label !== label) continue;
+      if (task.task.state !== "closed") continue;
+      for (const round of task.rounds.values()) {
+        if (round.target === target) cellRounds.push({ task, round });
+      }
+    }
+
+    const firstRounds = cellRounds.filter((entry) => entry.round.round === 1);
     const firstPass =
-      cellTasks.length > 0
-        ? cellTasks.filter((task) => task.task.first_pass === 1).length / cellTasks.length
+      firstRounds.length > 0
+        ? firstRounds.filter((entry) => entry.round.acceptance?.verdict === "accepted")
+            .length / firstRounds.length
         : 0;
-    return { n: cellTasks.length, firstPass, cpat: cpatFor(cellTasks) };
+
+    let accepted = 0;
+    let totalCost = 0;
+    for (const entry of cellRounds) {
+      const dispatch = entry.round.dispatch;
+      const acceptance = entry.round.acceptance;
+      if (dispatch === null && acceptance === null) continue;
+      totalCost += (dispatch?.cost_usd ?? 0) + (acceptance?.reviewer_cost_usd ?? 0);
+      if (acceptance?.verdict === "accepted") accepted += 1;
+    }
+
+    return {
+      n: cellRounds.length,
+      firstPass,
+      cpat: accepted > 0 ? totalCost / accepted : null,
+    };
   };
 
   let rule1: ReportSuggestion | null = null;

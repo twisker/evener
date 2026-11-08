@@ -1,0 +1,101 @@
+schema_version: 1
+policy_name: default
+
+classifier:
+  model: null                      # null → never call a model, use rules + fallback_table
+  endpoint: https://api.deepseek.com/v1
+  api_key_env: EVENER_CLASSIFIER_API_KEY
+  timeout_ms: 3000
+  temperature: 0
+  max_tokens: 300
+  price: {input_per_mtok: 0.28, output_per_mtok: 0.42}
+
+labeler:
+  model: null                      # null → heuristic
+  endpoint: null                   # null → reuse classifier endpoint/key
+  api_key_env: null
+
+taxonomy:
+  labels: [bugfix, feature, refactor, test, docs, mechanical, question]   # closed; "unknown" always allowed
+
+targets:
+  host:
+    description: The current host session does the work itself
+    cost_tier: high
+    enabled: true
+  codex:
+    description: OpenAI Codex CLI
+    command: [codex, exec, --json, --skip-git-repo-check, --sandbox, workspace-write, -o, "{output_file}", "-"]
+    model: gpt-5.1-codex          # for pricing only; null → cost unknown (recorded as 0, flagged)
+    api_key_env: OPENAI_API_KEY   # presence check only
+    cost_tier: mid
+    strengths: [bugfix, feature, test]
+    weaknesses: []
+    enabled: true
+  dsh:
+    description: DeepSeek Harness (headless)
+    command: [npx, "@deepseek-ai/dsh", --profile, headless, --json]
+    model: deepseek-v3.2
+    api_key_env: DEEPSEEK_API_KEY
+    cost_tier: low
+    strengths: [mechanical, docs, test]
+    weaknesses: [refactor]
+    enabled: true
+
+rules:                              # evaluated in order; first match wins; locked = user cannot override to a non-host target
+  - {id: private, if: {constraint: private_path}, then: host, locked: true}
+  - {id: question, if: {label: question}, then: host}
+  - {id: wide, if: {files_mentioned_gte: 8}, then: host}
+
+fallback_table:                     # used when classifier.model is null, times out, or errors
+  mechanical: dsh
+  docs: dsh
+  test: dsh
+  bugfix: codex
+  feature: codex
+  refactor: codex
+  question: host
+  unknown: codex
+
+preferences:
+  cost_weight: 0.6
+  quality_weight: 0.4
+  per_label_bias:
+    mechanical: {dsh: 0.8, codex: 0.2}
+    refactor: {host: 0.6, codex: 0.3, dsh: -0.5}
+
+escalation:
+  chain: [dsh, codex, host]
+  retry_same_target_once: true
+  escalate_on_reasons: [misunderstood, incomplete, regression]
+  never_escalate_on: [style]
+  force_escalate_after_same_reason: 2
+
+limits:
+  max_rounds_per_task: 3
+  max_cost_per_task_usd: 2.00
+  max_wall_per_round_s: 900
+  daily_budget_usd: null
+  acceptance_overhead_warn_task_ratio: 0.30
+  acceptance_overhead_warn_weekly_ratio: 0.20
+  circuit_breaker: {failures: 3, open_minutes: 30}
+
+privacy:
+  store_description_excerpt: false
+  private_paths: ["**/secrets/**", "**/.env*"]
+  never_delegate_repos: []
+
+experiment:
+  mode: off                         # off | interleave | bandit (bandit == interleave in v1)
+  arms: {}                          # e.g. {A: policy-a.yaml, B: policy-b.yaml}; paths relative to EVENER_HOME
+  assignment: random                # random | by_label_stratified
+  alpha: 0.10
+  power: 0.80
+
+quality_weights: {first_pass: 0.4, final_pass: 0.2, feedback: 0.3, revert: 0.1}
+style_rejection_suspect_ratio: 0.5
+
+host:
+  claude_code:
+    confirm_before_dispatch: false
+    route_subagent_tasks: true

@@ -1,0 +1,33 @@
+{
+  "name": "evener",
+  "version": "0.1.0",
+  "description": "Route delegated coding tasks to the most cost-effective target harness",
+  "type": "module",
+  "bin": {
+    "evener": "./dist/src/cli.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "files": [
+    "dist",
+    "templates"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/test/"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "dependencies": {
+    "yaml": "^2.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "typescript": "^5.7.3"
+  }
+}

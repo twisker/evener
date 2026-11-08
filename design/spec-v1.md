@@ -294,13 +294,13 @@ host:
     route_subagent_tasks: true
 ```
 
-`policy_version` = first 12 hex chars of sha256 over the YAML re-serialised with sorted keys.
+`policy_version` = first 12 hex chars of sha256 over the canonical JSON (recursively sorted keys) of the **effective** policy, i.e. after default filling and, under an experiment, after merging the arm file over the top-level file. The hash therefore identifies exactly what routed the task.
 Validation errors list every problem with a JSON pointer path; `evener policy validate` exits 2 on error.
 
 When `experiment.mode != off`, the top-level `policy.yaml` is the *experiment* file: its `experiment`,
 `limits`, `privacy`, `host`, `quality_weights` sections apply, and each arm file supplies
-`classifier`, `labeler`, `targets`, `rules`, `fallback_table`, `preferences`, `escalation`. The arm's
-`policy_version` is recorded on every event of that task.
+`classifier`, `labeler`, `targets`, `rules`, `fallback_table`, `preferences`, `escalation`; `taxonomy` and `style_rejection_suspect_ratio` stay
+top-level because labels are experiment-wide. The effective `policy_version` is recorded on every event of that task.
 
 `pricing.yaml`:
 

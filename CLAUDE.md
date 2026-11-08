@@ -1,6 +1,6 @@
 # CLAUDE.md — Evener
 
-Context for Claude Code when working in this repo. Read `design/prd-draft.md` before touching anything substantive.
+Context for Claude Code when working in this repo. Read `design/spec-v1.md` (the frozen implementation contract) before touching anything substantive; `design/prd-draft.md` has the motivation.
 
 ## What this is
 
@@ -21,21 +21,21 @@ Evener is an open-source plugin that routes delegated coding tasks from a host h
 - **Success metric**: ability to *distinguish* two policies' cost-efficiency at a given threshold, not absolute savings.
 - **Non-goals**: decomposition, context assembly, acceptance, token proxy, quota rotation, GUI (v1).
 
-## Open decisions (ask the user, or pick and state the assumption)
+## Decisions taken 2026-11-09 (see design/spec-v1.md §2 and design/decisions-for-user.md)
 
-- Implementation language for `core/` (TypeScript vs Python). Claude Code plugins are language-agnostic; dsh plugins are Node/Cordis.
-- Whether to rename schema fields `router_model` / `router:` to `classifier_model` / `classifier:` for consistency with "policy == classifier".
+- `core/` is TypeScript (ESM) on Node ≥ 22.13; only runtime dependency is `yaml`; `node:sqlite`, `node:test`, `parseArgs` from built-ins.
+- Schema uses `classifier` / `classifier_model` (renamed from `router`).
+- Defaults the user still needs to confirm (prices, model ids, classifier key, …) are listed in `design/decisions-for-user.md`; all are config, not code.
 
 ## Known external facts (verified 2026-11-09)
 
-- Codex: `codex exec --json` emits JSONL; usage is on `turn.completed.usage` (input / cached_input / output / reasoning_output). **Unverified**: whether usage is per-turn or cumulative for the thread. `-o <path>` writes the final message; `--output-schema` forces structured output.
-- dsh (`@deepseek-ai/dsh` 0.2.2-rc.1): `dsh --profile headless "task"` runs once and prints the last assistant message to stdout; **no usage in stdout**. Usage must come from `--profile sdk` (JSON-RPC over stdio) or from persisted session files under `$DSH_HOME`. Pre-release; expect breaking changes.
+- Codex: `codex exec --json` emits JSONL; `turn.completed.usage` is **cumulative for the thread** (input / cached_input / cache_write_input / output / reasoning_output). A fresh `codex exec` per round equals per-round usage. `-o <path>` writes the final message; prompt `-` reads stdin.
+- dsh (`@deepseek-ai/dsh` 0.2.2-rc.1): `dsh --profile headless --json` emits JSONL; `status.step_end.usage` carries per-step `inputTokens/outputTokens/cacheReadTokens/cacheWriteTokens`; `final.reason.kind` + exit code give success. Pre-release; expect breaking changes.
 - Nearby project to be aware of: npm `harness-reins` (dispatch to any agent and route result back).
 
-## Pending spikes (do these before building adapters)
+## How work is done in this repo
 
-1. Run `codex exec --json` locally; determine usage semantics (per-turn vs cumulative).
-2. Run `dsh --profile sdk`; capture JSON-RPC events and locate usage, or find the session file format.
+- Claude plans, writes briefs in `design/tasks/`, dispatches implementation to DeepSeek Harness (`cat design/tasks/_preamble.md design/tasks/Tn-*.md | npx @deepseek-ai/dsh --profile headless --json`), then reviews, runs `npm test`, and merges. Parallel tasks run in separate git worktrees under `../evener-wt/`.
 
 ## Conventions
 

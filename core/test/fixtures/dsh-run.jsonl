@@ -1,0 +1,9 @@
+{"type":"session","sessionId":"session-dsh-1","cwd":"/tmp/evener-project"}
+{"type":"status","phase":"turn_start","turn":1}
+{"type":"status","phase":"step_start","turn":1,"step":1}
+{"type":"status","phase":"step_end","turn":1,"step":1,"usage":{"inputTokens":399,"outputTokens":2,"cacheReadTokens":5248,"cacheWriteTokens":0,"totalTokens":5647}}
+{"type":"tool_call","name":"read_file","input":{"path":"src/main.ts"}}
+{"type":"status","phase":"step_start","turn":1,"step":2}
+{"type":"status","phase":"step_end","turn":1,"step":2,"usage":{"inputTokens":1000,"outputTokens":50,"cacheReadTokens":0,"cacheWriteTokens":0,"totalTokens":1050}}
+{"type":"status","phase":"turn_end","turn":1}
+{"type":"final","sessionId":"session-dsh-1","reason":{"kind":"completed"},"text":"Done: updated src/main.ts."}

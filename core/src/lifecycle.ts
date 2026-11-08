@@ -191,6 +191,25 @@ function maxRound(events: readonly EvenerEvent[], fallback: number): number {
   return round;
 }
 
+/**
+ * Target that handled each round.
+ *
+ * `route.decided` and `task.redispatch` are both emitted with the round they
+ * start, so either one identifies the dispatched target. The last event wins
+ * when both are present (they agree in normal logs).
+ */
+function dispatchedTargets(events: readonly EvenerEvent[]): Map<number, string> {
+  const targets = new Map<number, string>();
+  for (const event of events) {
+    if (event.type === "route.decided") {
+      targets.set(event.round, event.data.target);
+    } else if (event.type === "task.redispatch") {
+      targets.set(event.round, event.data.next_target);
+    }
+  }
+  return targets;
+}
+
 function checkedNumber(value: number, name: string, integer = false): number {
   if (!Number.isFinite(value) || value < 0 || (integer && !Number.isInteger(value))) {
     throw new LifecycleError(
@@ -431,11 +450,13 @@ export function decideNext(
       event.data.kind === "retry" &&
       event.data.next_target === current,
   );
+  const dispatchedTargetsByRound = dispatchedTargets(events);
   const sameReasonCount = events.filter(
     (event) =>
       event.type === "acceptance.finished" &&
       event.data.verdict === "rejected" &&
-      (event.data.reject_reason ?? "other") === reason,
+      (event.data.reject_reason ?? "other") === reason &&
+      dispatchedTargetsByRound.get(event.round) === current,
   ).length;
 
   const forceEscalate =

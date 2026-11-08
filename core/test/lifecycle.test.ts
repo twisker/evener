@@ -410,6 +410,33 @@ test("the same reason twice forces escalation even for never_escalate_on", (t) =
   assert.match(decision.why, /force escalate/);
 });
 
+test("the same reason on a previous target does not force escalation of the current target", (t) => {
+  const { store } = tempStore(t);
+  const policy = defaultPolicy();
+  // Isolate the repeated-same-reason guard: `incomplete` is not an immediate
+  // escalation reason for this test.
+  policy.escalation.escalate_on_reasons = policy.escalation.escalate_on_reasons.filter(
+    (candidate) => candidate !== "incomplete",
+  );
+  const task = newTask(store);
+
+  rejectedRound(store, task, "dsh", 1, "incomplete");
+  // Round 2 was escalated from dsh to codex; the counter must not combine
+  // dsh's rejection with codex's.
+  redispatch(store, task, 2, "codex", "escalate", "incomplete");
+  route(store, mustTask(store, task.task_id), "codex", 2);
+  dispatchFinished(store, mustTask(store, task.task_id), 2);
+  acceptance(store, mustTask(store, task.task_id), 2, "rejected", "incomplete");
+
+  const decision = decideNext(store, policy, mustTask(store, task.task_id), NOW);
+  assert.equal(decision.action, "redispatch");
+  if (decision.action !== "redispatch") return;
+  assert.equal(decision.kind, "retry");
+  assert.equal(decision.next_target, "codex");
+  assert.equal(decision.round, 3);
+  assert.doesNotMatch(decision.why, /force escalate/);
+});
+
 test("max_rounds_per_task hands the task to a human", (t) => {
   const { store } = tempStore(t);
   const policy = defaultPolicy();

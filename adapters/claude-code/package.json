@@ -1,0 +1,10 @@
+{
+  "name": "@evener/claude-code-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claude Code plugin adapter for Evener: skill, hooks, commands and launcher.",
+  "type": "module",
+  "scripts": {
+    "test": "sh ./scripts/selftest.sh"
+  }
+}

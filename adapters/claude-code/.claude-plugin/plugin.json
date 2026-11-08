@@ -1,0 +1,13 @@
+{
+  "name": "evener",
+  "version": "0.1.0",
+  "description": "Route delegated coding tasks to the cheapest capable harness and record cost, time and quality.",
+  "author": {
+    "name": "Evener contributors"
+  },
+  "skills": [
+    "./skills/"
+  ],
+  "hooks": "./hooks/hooks.json",
+  "commands": "./commands/"
+}

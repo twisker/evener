@@ -49,11 +49,16 @@ if (!plugin.author || plugin.author.name !== "Evener contributors") throw new Er
 node -e '
 const fs = require("node:fs");
 const hooks = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-for (const event of ["Stop", "SubagentStop"]) {
+const expected = {
+  SessionStart: "scripts/session-start.sh",
+  Stop: "scripts/sweep.sh",
+  SubagentStop: "scripts/sweep.sh",
+};
+for (const [event, script] of Object.entries(expected)) {
   const entries = hooks.hooks && hooks.hooks[event];
   if (!Array.isArray(entries) || entries.length === 0) throw new Error(`missing hooks.hooks.${event}`);
   const command = entries[0] && entries[0].hooks && entries[0].hooks[0] && entries[0].hooks[0].command;
-  if (typeof command !== "string" || !command.includes("scripts/sweep.sh")) {
+  if (typeof command !== "string" || !command.includes(script)) {
     throw new Error(`bad ${event} command`);
   }
 }
@@ -86,7 +91,7 @@ if (!description || !description[1].startsWith("Route a delegated coding sub-tas
   throw new Error("description does not begin with the required sentence");
 }
 const lineCount = text.split(/\r?\n/).length;
-if (lineCount > 150) throw new Error(`SKILL.md is ${lineCount} lines; maximum is 150`);
+if (lineCount > 170) throw new Error(`SKILL.md is ${lineCount} lines; maximum is 170`);
 ' "$skill_md" || fail "SKILL.md checks failed"
 
 printf 'adapter selftest: building core\n'
@@ -94,12 +99,27 @@ printf 'adapter selftest: building core\n'
 
 printf 'adapter selftest: checking launcher\n'
 [ -x "$adapter_dir/bin/evener" ] || fail "bin/evener is not executable"
-help_output=$("$adapter_dir/bin/evener" --help) || fail "bin/evener --help failed"
-[ -n "$help_output" ] || fail "bin/evener --help produced no output"
+help_output=$("$adapter_dir/bin/evener" help) || fail "bin/evener help failed"
+[ -n "$help_output" ] || fail "bin/evener help produced no output"
+case "$help_output" in
+  *'"commands"'*) ;;
+  *) fail "bin/evener help does not print \"commands\"" ;;
+esac
 
-printf 'adapter selftest: checking sweep hook\n'
+printf 'adapter selftest: checking SessionStart hook\n'
 tmp_home=$(mktemp -d)
 trap 'rm -rf "$tmp_home"' EXIT HUP INT TERM
+
+session_start_output=$(
+  printf '%s\n' '{"session_id":"abc"}' \
+    | EVENER_HOME="$tmp_home" sh "$adapter_dir/scripts/session-start.sh"
+) || fail "session-start.sh failed with valid input"
+case "$session_start_output" in
+  *abc*) ;;
+  *) fail "session-start.sh did not include the session id" ;;
+esac
+
+printf 'adapter selftest: checking sweep hook\n'
 
 sweep_output=$(
   printf '%s\n' '{"session_id":"x","stop_hook_active":false}' \

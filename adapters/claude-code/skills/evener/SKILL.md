@@ -30,8 +30,8 @@ Write the sub-task description to `$DESC` (Write tool, or
 
 ```sh
 evener task create --description-file "$DESC" --files path/a.ts,path/b.ts \
-  --host claude-code --cwd "$PWD"
-# Add --host-session <session id> only when you actually know it; otherwise omit it.
+  --host claude-code --host-session "<session id>" --cwd "$PWD"
+# Use the id from the SessionStart hook context. Omit --host-session only if unknown.
 ```
 
 Returns `{task_id, analysis_label, pre_features, policy_version, arm}`.
@@ -45,8 +45,12 @@ Returns `{task_id, round, target, decided_by, rule_id, rationale, candidates, ar
 
 Branch on `target`:
 
-- **`host`** — do the work yourself in this session. Afterwards still call
-  `evener accept` and then `evener next` (and close) so the data is complete.
+- **`host`** — do the work yourself in this session. Afterwards run
+  `evener done --task "$TASK" --wall-ms <elapsed ms if known> [--cost-usd C]`
+  **before** `evener accept`: `done` records the host-executed round, so the task
+  reaches `awaiting_acceptance` and the round's cost/time are counted. It returns
+  `{task_id, round, target, status, wall_ms, cost_usd}`. Then call
+  `evener accept` and `evener next` (and close) so the data is complete.
 - **`codex` or `dsh`** — compose the *full* prompt for that target in a new temp file:
 
   ```sh
@@ -102,7 +106,9 @@ Returns `{task_id, action, outcome?, kind?, next_target?, round?, why}`.
 
 - **`redispatch`** — build an improved prompt (add missing context, name the failure to
   fix) and dispatch again with the same command as step 2. `next` already advanced the
-  round and selected `next_target`; do not call `decide` again.
+  round and selected `next_target`; do not call `decide` again. When `next_target` is
+  `host`, do the work in-session, then run `evener done` → `evener accept` as in step 2
+  before calling `next` again.
 - **`hand_to_human`** — stop and tell the user what is blocked and `why`. Close the data
   with `evener close --task "$TASK" --outcome handed_to_human`.
 - **`close`** — close the task with the accepted outcome:

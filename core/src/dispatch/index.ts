@@ -17,6 +17,7 @@ import type { Store } from "../store.js";
 import type {
   DiffStats,
   DispatchFinishedPayload,
+  DispatchStartedPayload,
   DispatchStatus,
   EvenerEvent,
   EventType,
@@ -475,4 +476,101 @@ export async function runDispatch(opts: RunDispatchOptions): Promise<DispatchRes
     outputPath,
     countsForCircuit: status === "error" || status === "timeout",
   });
+}
+
+// ---------------------------------------------------------------------------
+// Host-executed rounds (`evener done`)
+// ---------------------------------------------------------------------------
+
+export interface RecordHostRoundOptions {
+  store: Store;
+  task: TaskRow;
+  /** Working directory used for `git diff --numstat`. */
+  cwd: string;
+  pricingVersion: string;
+  /** Defaults to 0. */
+  wallMs?: number;
+  /** When omitted the round is recorded as cost 0 with `cost_unknown: true`. */
+  costUsd?: number;
+  /** Defaults to null. */
+  model?: string | null;
+  /** Defaults to success. Host rounds only ever succeed or error. */
+  status?: "success" | "error";
+  now: () => string;
+}
+
+export interface HostRoundResult {
+  task_id: string;
+  round: number;
+  target: "host";
+  status: "success" | "error";
+  wall_ms: number;
+  cost_usd: number;
+}
+
+/**
+ * Record a round the host executed itself (spec §7, `evener done`).
+ *
+ * The host already did the work before calling this, so the diff snapshot is a
+ * single `git diff --numstat` reading rather than a before/after pair. This
+ * never touches the circuit breaker: host rounds are not target failures.
+ */
+export async function recordHostRound(opts: RecordHostRoundOptions): Promise<HostRoundResult> {
+  const { store } = opts;
+  const current = store.getTask(opts.task.task_id) ?? opts.task;
+  if (current.state !== "routed") {
+    throw new DispatchError(
+      "invalid_state",
+      `task ${current.task_id} is in state "${current.state}", expected "routed"`,
+    );
+  }
+  if (current.current_target !== "host") {
+    throw new DispatchError(
+      "not_host_round",
+      `task ${current.task_id} targets "${current.current_target ?? "none"}", not "host"`,
+    );
+  }
+
+  const status = opts.status ?? "success";
+  const wallMs = opts.wallMs ?? 0;
+  const costUsd = opts.costUsd ?? 0;
+  const diffStats = await gitDiffStats(opts.cwd);
+  const ts = opts.now();
+  const round = current.current_round;
+
+  const started: DispatchStartedPayload = {
+    target: "host",
+    target_version: null,
+    model: opts.model ?? null,
+    context_bytes: 0,
+    command: "host",
+  };
+  const finished: DispatchFinishedPayload & { cost_unknown: boolean } = {
+    status,
+    wall_ms: wallMs,
+    usage: zeroUsage(),
+    usage_raw: {},
+    cost_usd: costUsd,
+    price_table_version: opts.pricingVersion,
+    diff_stats: diffStats,
+    tool_calls: null,
+    exit_code: null,
+    target_session_id: null,
+    output_path: null,
+    cost_unknown: opts.costUsd === undefined,
+  };
+
+  store.withTransaction(() => {
+    store.appendEvent(makeEvent(current, "dispatch.started", ts, started));
+    store.appendEvent(makeEvent(current, "dispatch.finished", ts, finished));
+  });
+
+  return {
+    task_id: current.task_id,
+    round,
+    target: "host",
+    status,
+    wall_ms: wallMs,
+    cost_usd: costUsd,
+  };
 }

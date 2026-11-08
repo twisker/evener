@@ -21,7 +21,11 @@ export { CommandError as CliError } from "./commands/types.js";
 // IO / output
 // ---------------------------------------------------------------------------
 
-export type OutputFormat = "json" | "md";
+export type OutputFormat = "json" | "md" | "jsonl" | "otel";
+
+function isOutputFormat(value: string): value is OutputFormat {
+  return value === "json" || value === "md" || value === "jsonl" || value === "otel";
+}
 
 function emitText(sink: CliIO["stdout"], text: string): void {
   if (typeof sink === "function") {
@@ -72,15 +76,15 @@ function extractGlobalOptions(argv: string[]): GlobalParseResult {
       options.home = value;
     } else if (arg === "--format") {
       const value = argv[index + 1];
-      if (value !== "json" && value !== "md") {
-        return { options, rest, error: "--format must be json or md" };
+      if (value === undefined || !isOutputFormat(value)) {
+        return { options, rest, error: "--format must be json, md, jsonl or otel" };
       }
       options.format = value;
       index += 1;
     } else if (arg.startsWith("--format=")) {
       const value = arg.slice("--format=".length);
-      if (value !== "json" && value !== "md") {
-        return { options, rest, error: "--format must be json or md" };
+      if (!isOutputFormat(value)) {
+        return { options, rest, error: "--format must be json, md, jsonl or otel" };
       }
       options.format = value;
     } else if (arg === "--quiet" || arg === "-q") {
@@ -144,6 +148,7 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
     dbPath,
     store: getStore,
     io,
+    format,
   };
 
   if (globals.error !== undefined) {

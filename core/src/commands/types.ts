@@ -29,6 +29,8 @@ export interface CommandContext {
   /** Lazily open the store; repeated calls return the same handle. */
   store: () => Store;
   io: CliIO;
+  /** Global `--format` value (commands that emit raw text use this). */
+  format?: "json" | "md" | "jsonl" | "otel";
 }
 
 export type CommandHandler = (ctx: CommandContext, argv: string[]) => Promise<unknown>;

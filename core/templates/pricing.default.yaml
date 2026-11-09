@@ -1,5 +1,7 @@
 schema_version: 1
 models:
   gpt-5.1-codex:   {input_per_mtok: 1.25, cached_input_per_mtok: 0.125, output_per_mtok: 10.0}
-  deepseek-flash:  {input_per_mtok: 0.30, cached_input_per_mtok: 0.006, output_per_mtok: 1.20}   # peak price; off-peak is half
-  deepseek-v4-pro: {input_per_mtok: 1.32, cached_input_per_mtok: 0.044, output_per_mtok: 3.96}
+  deepseek-flash:  {input_per_mtok: 0.15, cached_input_per_mtok: 0.003, output_per_mtok: 0.60, peak: deepseek}
+  deepseek-v4-pro: {input_per_mtok: 0.66, cached_input_per_mtok: 0.022, output_per_mtok: 1.98, peak: deepseek}
+peak_schedules:                     # a model whose price names a schedule is billed price × factor inside the windows
+  deepseek: {tz: Asia/Shanghai, windows: ["09:00-12:00", "14:00-18:00"], weekdays_only: true, factor: 2}

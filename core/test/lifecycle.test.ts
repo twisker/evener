@@ -332,7 +332,70 @@ test("accept requires a reason when rejected and defaults review/costs", (t) => 
     reject_reason: "style",
     reviewer_cost_usd: 0,
     reviewer_wall_ms: 0,
+    reviewer_usage: null,
+    self_accepted: false,
   });
+});
+
+test("accept records reviewer tokens and defaults omitted counters to zero", (t) => {
+  const { store } = tempStore(t);
+  const policy = defaultPolicy();
+  const task = newTask(store);
+  route(store, task, "dsh", 1);
+  dispatchFinished(store, task, 1);
+  const awaiting = mustTask(store, task.task_id);
+
+  const result = accept(store, policy, awaiting, NOW, {
+    verdict: "accepted",
+    reviewerUsage: { input: 120, cached_input: 40 },
+  });
+  store.appendEvent(result.events[0] as EvenerEvent);
+
+  const event = store.getEvents(task.task_id).at(-1);
+  assert.equal(event?.type, "acceptance.finished");
+  if (event?.type === "acceptance.finished") {
+    assert.deepEqual(event.data.reviewer_usage, {
+      input: 120,
+      cached_input: 40,
+      output: 0,
+    });
+    assert.equal(event.data.self_accepted, false);
+  }
+});
+
+test("accept marks a host round self-accepted", (t) => {
+  const { store } = tempStore(t);
+  const policy = defaultPolicy();
+  const task = newTask(store);
+  route(store, task, "host", 1);
+  store.appendEvent(
+    makeEvent(task, "dispatch.started", 1, {
+      target: "host",
+      target_version: null,
+      model: null,
+      context_bytes: 0,
+      command: "host",
+    }),
+  );
+  dispatchFinished(store, task, 1);
+  const awaiting = mustTask(store, task.task_id);
+
+  const result = accept(store, policy, awaiting, NOW, {
+    verdict: "accepted",
+    reviewerUsage: { output: 7 },
+  });
+  store.appendEvent(result.events[0] as EvenerEvent);
+
+  const event = store.getEvents(task.task_id).at(-1);
+  assert.equal(event?.type, "acceptance.finished");
+  if (event?.type === "acceptance.finished") {
+    assert.equal(event.data.self_accepted, true);
+    assert.deepEqual(event.data.reviewer_usage, {
+      input: 0,
+      cached_input: 0,
+      output: 7,
+    });
+  }
 });
 
 test("accept refuses a task that is not awaiting acceptance", (t) => {
@@ -911,6 +974,12 @@ test("accept CLI requires a reason for rejection and records check defaults", as
     "tests=pass",
     "--check",
     "lint=skipped",
+    "--reviewer-input-tokens",
+    "1000",
+    "--reviewer-cached-tokens",
+    "250",
+    "--reviewer-output-tokens",
+    "80",
   ]);
   assert.equal(accepted.code, 0);
   assert.deepEqual(accepted.payload, { task_id: taskId, round: 1, verdict: "accepted" });
@@ -934,6 +1003,12 @@ test("accept CLI requires a reason for rejection and records check defaults", as
     assert.equal(event.data.review_verdict, "skipped");
     assert.equal(event.data.reviewer_cost_usd, 0);
     assert.equal(event.data.reviewer_wall_ms, 0);
+    assert.deepEqual(event.data.reviewer_usage, {
+      input: 1000,
+      cached_input: 250,
+      output: 80,
+    });
+    assert.equal(event.data.self_accepted, false);
   }
 });
 

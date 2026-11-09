@@ -294,7 +294,7 @@ test("task create uses the model labeler by default and reports no warnings", as
   const data = status.payload.events[0]?.data;
   assert.ok(data !== undefined);
   assert.equal(data["labeler_model"], "deepseek-flash");
-  assert.ok(Math.abs(Number(data["labeler_cost_usd"]) - 0.0000804) < 1e-12);
+  assert.ok(Math.abs(Number(data["labeler_cost_usd"]) - 0.0000402) < 1e-12);
   assert.ok(Number(data["labeler_latency_ms"]) >= 0);
 });
 

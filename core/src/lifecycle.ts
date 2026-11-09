@@ -31,6 +31,7 @@ import type {
   RejectReason,
   ReviewVerdict,
   RouteDecidedPayload,
+  ReviewerUsage,
   TargetCircuitPayload,
   TaskClosedPayload,
   TaskRedispatchPayload,
@@ -74,6 +75,8 @@ export interface AcceptArgs {
   review?: ReviewVerdict;
   reviewerCostUsd?: number;
   reviewerWallMs?: number;
+  /** Omitted fields default to 0; null/empty means the host could not report it. */
+  reviewerUsage?: Partial<ReviewerUsage> | null;
 }
 
 export interface AcceptOutput {
@@ -340,6 +343,34 @@ export function nextInChain(
 // accept
 // ---------------------------------------------------------------------------
 
+/** Build the acceptance token triple, or null when no token count was given. */
+function normaliseReviewerUsage(
+  value: Partial<ReviewerUsage> | null | undefined,
+): ReviewerUsage | null {
+  if (value === null || value === undefined) return null;
+  const input = value.input;
+  const cachedInput = value.cached_input;
+  const output = value.output;
+  if (input === undefined && cachedInput === undefined && output === undefined) return null;
+  return {
+    input: checkedNumber(input ?? 0, "reviewer input tokens", true),
+    cached_input: checkedNumber(cachedInput ?? 0, "reviewer cached tokens", true),
+    output: checkedNumber(output ?? 0, "reviewer output tokens", true),
+  };
+}
+
+/** True when `round` was dispatched to the host itself. */
+function selfAccepted(events: readonly EvenerEvent[], round: number): boolean {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event === undefined) continue;
+    if (event.type === "dispatch.started" && event.round === round) {
+      return event.data.target === "host";
+    }
+  }
+  return false;
+}
+
 export function accept(
   store: Store,
   _policy: Policy,
@@ -383,6 +414,9 @@ export function accept(
 
   const reviewerCost = checkedNumber(args.reviewerCostUsd ?? 0, "reviewer cost");
   const reviewerWall = checkedNumber(args.reviewerWallMs ?? 0, "reviewer wall", true);
+  const reviewerUsage = normaliseReviewerUsage(args.reviewerUsage);
+  const round = current.current_round;
+  const events = store.getEvents(current.task_id);
 
   const data: AcceptanceFinishedPayload = {
     verdict: args.verdict,
@@ -391,9 +425,10 @@ export function accept(
     reject_reason: args.verdict === "rejected" ? reason : null,
     reviewer_cost_usd: reviewerCost,
     reviewer_wall_ms: reviewerWall,
+    reviewer_usage: reviewerUsage,
+    self_accepted: selfAccepted(events, round),
   };
 
-  const round = current.current_round;
   return {
     events: [makeEvent(current, now, "acceptance.finished", round, data)],
     output: { task_id: current.task_id, round, verdict: args.verdict },

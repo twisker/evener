@@ -98,8 +98,8 @@ test("the model path parses all three fields, prices usage and sends request_ext
   assert.equal(labelled.time_bucket, "1h_4h");
   assert.equal(labelled.has_repro, false);
   assert.equal(labelled.warning, null);
-  // 176/1e6 * 0.30 + 23/1e6 * 1.20
-  assert.ok(Math.abs((labelled.labeler_cost_usd ?? -1) - 0.0000804) < 1e-12);
+  // 176/1e6 * 0.15 + 23/1e6 * 0.60
+  assert.ok(Math.abs((labelled.labeler_cost_usd ?? -1) - 0.0000402) < 1e-12);
   assert.ok((labelled.labeler_latency_ms ?? -1) >= 0);
 
   assert.equal(authorization, "Bearer env-secret");

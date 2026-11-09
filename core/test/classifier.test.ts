@@ -8,7 +8,7 @@ import {
   renderClassifierPrompt,
 } from "../src/classifier.js";
 import type { TaskFeatures } from "../src/classifier.js";
-import { defaultPolicy } from "../src/config.js";
+import { defaultPolicy, defaultPricing } from "../src/config.js";
 import { labelTask } from "../src/labeler.js";
 import type { Policy } from "../src/types.js";
 
@@ -227,7 +227,50 @@ test("classifyTarget parses a fenced JSON answer and computes cost", async () =>
   assert.deepEqual(result.scores, { dsh: 0.9, codex: 0.2 });
   assert.equal(result.rationale, "cheap");
   assert.equal(result.model, "classifier-1");
-  assert.ok(Math.abs(result.cost_usd - 0.9) < 1e-9);
+  assert.ok(Math.abs(result.cost_usd - 0.45) < 1e-9);
+});
+
+test("classifyTarget applies the inline price's peak schedule at the given instant", async () => {
+  const policy = arm();
+  policy.classifier.price = { input_per_mtok: 1, output_per_mtok: 2, peak: "classifier-peak" };
+  const pricing = defaultPricing();
+  pricing.peak_schedules = {
+    "classifier-peak": {
+      tz: "Asia/Shanghai",
+      windows: ["09:00-12:00"],
+      weekdays_only: true,
+      factor: 2,
+    },
+  };
+  const fetchImpl = stubFetch(() =>
+    chatResponse('{"target":"dsh","scores":{"dsh":1},"rationale":"x"}', {
+      prompt_tokens: 1_000_000,
+      completion_tokens: 500_000,
+    }),
+  );
+
+  const peak = await classifyTarget(
+    policy,
+    features(),
+    { CLASSIFIER_KEY: "secret" },
+    fetchImpl,
+    pricing,
+    new Date("2026-11-10T02:30:00.000Z"),
+  );
+  const off = await classifyTarget(
+    policy,
+    features(),
+    { CLASSIFIER_KEY: "secret" },
+    fetchImpl,
+    pricing,
+    new Date("2026-11-10T05:00:00.000Z"),
+  );
+
+  assert.equal(peak.ok, true);
+  assert.equal(off.ok, true);
+  if (!peak.ok || !off.ok) return;
+  assert.ok(Math.abs(peak.cost_usd - 4) < 1e-9);
+  assert.ok(Math.abs(off.cost_usd - 2) < 1e-9);
 });
 
 test("classifyTarget rejects a disabled target with invalid_target", async () => {
@@ -323,7 +366,7 @@ test("labelWithModel uses the fixed prompt and falls back to the classifier endp
   assert.equal(result.time_bucket, "15m_1h");
   assert.equal(result.has_repro, false);
   assert.equal(result.error, null);
-  assert.ok(Math.abs((result.cost_usd ?? -1) - 0.000009) < 1e-12);
+  assert.ok(Math.abs((result.cost_usd ?? -1) - 0.0000045) < 1e-12);
   assert.ok((result.latency_ms ?? -1) >= 0);
   assert.equal(seenUrl, "https://classifier.test/v1/chat/completions");
   assert.match(seenUser, /Classify this coding task into exactly one label from: bugfix/);
@@ -331,6 +374,54 @@ test("labelWithModel uses the fixed prompt and falls back to the classifier endp
   assert.match(seenUser, /Answer \{"label": "<label>", "time_bucket": "<bucket>", "has_repro": <true\|false>\}/);
   assert.match(seenUser, /25 min|15 min/);
   assert.match(seenUser, /Update the README/);
+});
+
+test("labelWithModel applies the inline price's peak schedule", async () => {
+  const policy = arm();
+  policy.labeler = {
+    ...policy.labeler,
+    model: "labeler-1",
+    price: { input_per_mtok: 1, output_per_mtok: 2, peak: "labeler-peak" },
+  };
+  const pricing = defaultPricing();
+  pricing.peak_schedules = {
+    "labeler-peak": {
+      tz: "Asia/Shanghai",
+      windows: ["09:00-12:00"],
+      weekdays_only: true,
+      factor: 3,
+    },
+  };
+  const fetchImpl = stubFetch(() =>
+    chatResponse('{"label":"docs","time_bucket":"lt15m","has_repro":false}', {
+      prompt_tokens: 1_000_000,
+      completion_tokens: 500_000,
+    }),
+  );
+
+  const peak = await labelWithModel(
+    policy.labeler,
+    policy.taxonomy,
+    "Update the README",
+    { DEEPSEEK_API_KEY: "secret" },
+    fetchImpl,
+    policy.classifier,
+    pricing,
+    new Date("2026-11-10T02:30:00.000Z"),
+  );
+  const off = await labelWithModel(
+    policy.labeler,
+    policy.taxonomy,
+    "Update the README",
+    { DEEPSEEK_API_KEY: "secret" },
+    fetchImpl,
+    policy.classifier,
+    pricing,
+    new Date("2026-11-10T05:00:00.000Z"),
+  );
+
+  assert.ok(Math.abs((peak.cost_usd ?? 0) - 6) < 1e-9);
+  assert.ok(Math.abs((off.cost_usd ?? 0) - 2) < 1e-9);
 });
 
 test("labelWithModel reports an http error instead of swallowing it", async () => {

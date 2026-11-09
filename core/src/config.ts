@@ -279,7 +279,7 @@ const CLASSIFIER_KEYS = [
   "price",
   "request_extra",
 ] as const;
-const CLASSIFIER_PRICE_KEYS = ["input_per_mtok", "output_per_mtok"] as const;
+const CLASSIFIER_PRICE_KEYS = ["input_per_mtok", "output_per_mtok", "peak"] as const;
 const LABELER_KEYS = [
   "model",
   "endpoint",
@@ -344,8 +344,16 @@ const EXPERIMENT_KEYS = ["mode", "arms", "assignment", "alpha", "power"] as cons
 const QUALITY_WEIGHT_KEYS = ["first_pass", "final_pass", "feedback", "revert"] as const;
 const HOST_KEYS = ["claude_code"] as const;
 const CLAUDE_CODE_KEYS = ["confirm_before_dispatch", "route_subagent_tasks"] as const;
-const PRICING_KEYS = ["schema_version", "models"] as const;
-const MODEL_PRICE_KEYS = ["input_per_mtok", "cached_input_per_mtok", "output_per_mtok"] as const;
+const PRICING_KEYS = ["schema_version", "models", "peak_schedules"] as const;
+const REQUIRED_PRICING_KEYS = ["schema_version", "models"] as const;
+const MODEL_PRICE_KEYS = [
+  "input_per_mtok",
+  "cached_input_per_mtok",
+  "output_per_mtok",
+  "peak",
+] as const;
+const PEAK_SCHEDULE_KEYS = ["tz", "windows", "weekdays_only", "factor"] as const;
+const TIME_WINDOW = /^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$/;
 
 const POLICY_KEY_SET = new Set<string>(POLICY_KEYS);
 const LABEL_SET = new Set<string>(LABELS);
@@ -547,6 +555,9 @@ function validatePrice(
   warnUnknown(price, CLASSIFIER_PRICE_KEYS, base, warnings);
   checkNumber(price["input_per_mtok"], pointer(base, "input_per_mtok"), errors, { min: 0 });
   checkNumber(price["output_per_mtok"], pointer(base, "output_per_mtok"), errors, { min: 0 });
+  if (hasOwn(price, "peak")) {
+    checkString(price["peak"], pointer(base, "peak"), errors);
+  }
 }
 
 /**
@@ -1237,6 +1248,58 @@ export function loadEffectivePolicy(home: string, opts: { arm?: string } = {}): 
 // Pricing validation
 // ---------------------------------------------------------------------------
 
+function validatePeakSchedule(
+  value: unknown,
+  base: string,
+  errors: ValidationIssue[],
+  warnings: ValidationIssue[],
+): void {
+  const schedule = asObject(value, base, errors);
+  if (schedule === null) return;
+  warnUnknown(schedule, PEAK_SCHEDULE_KEYS, base, warnings);
+
+  const tz = checkString(schedule["tz"], pointer(base, "tz"), errors);
+  if (tz !== null) {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    } catch {
+      errors.push({ path: pointer(base, "tz"), message: `unknown time zone "${tz}"` });
+    }
+  }
+
+  const windows = checkStringArray(schedule["windows"], pointer(base, "windows"), errors, {
+    nonEmpty: true,
+    nonEmptyEntries: true,
+  });
+  if (windows !== null) {
+    windows.forEach((window, index) => {
+      const path = pointer(pointer(base, "windows"), index);
+      const match = TIME_WINDOW.exec(window);
+      if (match === null) {
+        errors.push({
+          path,
+          message: `must be "HH:MM-HH:MM" with a 24-hour local time (got "${window}")`,
+        });
+        return;
+      }
+      const start = Number(match[1]) * 60 + Number(match[2]);
+      const end = Number(match[3]) * 60 + Number(match[4]);
+      if (start >= end) {
+        errors.push({
+          path,
+          message: "must not wrap around midnight: start must be before end",
+        });
+      }
+    });
+  }
+
+  checkBoolean(schedule["weekdays_only"], pointer(base, "weekdays_only"), errors);
+  checkNumber(schedule["factor"], pointer(base, "factor"), errors, {
+    min: 0,
+    exclusiveMin: true,
+  });
+}
+
 function validatePricingInternal(input: unknown): PricingValidationResult {
   const errors: ValidationIssue[] = [];
   const warnings: ValidationIssue[] = [];
@@ -1252,7 +1315,7 @@ function validatePricingInternal(input: unknown): PricingValidationResult {
       errors.push({ path: pointer("", key), message: `unknown top-level key "${key}"` });
     }
   }
-  for (const key of PRICING_KEYS) {
+  for (const key of REQUIRED_PRICING_KEYS) {
     if (!hasOwn(input, key)) {
       errors.push({ path: pointer("", key), message: "required key is missing" });
     }
@@ -1264,10 +1327,25 @@ function validatePricingInternal(input: unknown): PricingValidationResult {
     return { ok: false, errors, warnings };
   }
 
-  const schemaVersion = checkNumber(merged["schema_version"], "/schema_version", errors, { integer: true });
+  const schemaVersion = checkNumber(merged["schema_version"], "/schema_version", errors, {
+    integer: true,
+  });
   if (schemaVersion !== null && schemaVersion !== 1) {
     errors.push({ path: "/schema_version", message: "must be 1" });
   }
+
+  const rawSchedules = merged["peak_schedules"];
+  let schedules: Record<string, unknown> | null = null;
+  if (rawSchedules !== undefined) {
+    schedules = asObject(rawSchedules, "/peak_schedules", errors);
+    if (schedules !== null) {
+      for (const [name, schedule] of Object.entries(schedules)) {
+        validatePeakSchedule(schedule, pointer("/peak_schedules", name), errors, warnings);
+      }
+    }
+  }
+  const scheduleNames = new Set(schedules === null ? [] : Object.keys(schedules));
+
   const models = asObject(merged["models"], "/models", errors);
   if (models !== null) {
     for (const [name, rawPrice] of Object.entries(models)) {
@@ -1276,7 +1354,17 @@ function validatePricingInternal(input: unknown): PricingValidationResult {
       if (price === null) continue;
       warnUnknown(price, MODEL_PRICE_KEYS, base, warnings);
       for (const key of MODEL_PRICE_KEYS) {
+        if (key === "peak") continue;
         checkNumber(price[key], pointer(base, key), errors, { min: 0 });
+      }
+      if (hasOwn(price, "peak")) {
+        const peak = checkString(price["peak"], pointer(base, "peak"), errors);
+        if (peak !== null && !scheduleNames.has(peak)) {
+          errors.push({
+            path: pointer(base, "peak"),
+            message: `unknown peak schedule "${peak}"`,
+          });
+        }
       }
     }
   }

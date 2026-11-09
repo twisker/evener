@@ -49,6 +49,9 @@ export const DISPATCH_STATUSES = [
 ] as const;
 export type DispatchStatus = (typeof DISPATCH_STATUSES)[number];
 
+export const PRICING_PERIODS = ["peak", "off", "flat"] as const;
+export type PricingPeriod = (typeof PRICING_PERIODS)[number];
+
 export const OUTCOMES = ["accepted", "handed_to_human", "abandoned"] as const;
 export type Outcome = (typeof OUTCOMES)[number];
 
@@ -234,11 +237,23 @@ export interface DispatchFinishedPayload {
   exit_code: number | null;
   target_session_id: string | null;
   output_path: string | null;
+  /** Optional so older events without timing still validate. */
+  model_ms?: number | null;
+  /** Optional so older events without timing still validate. */
+  tool_ms?: number | null;
+  /** Optional so older events without a recorded tier still validate. */
+  pricing_period?: PricingPeriod;
 }
 
 export interface AcceptanceCheck {
   name: CheckName;
   result: CheckResult;
+}
+
+export interface ReviewerUsage {
+  input: number;
+  cached_input: number;
+  output: number;
 }
 
 export interface AcceptanceFinishedPayload {
@@ -248,6 +263,10 @@ export interface AcceptanceFinishedPayload {
   reject_reason: RejectReason | null;
   reviewer_cost_usd: number;
   reviewer_wall_ms: number;
+  /** Optional so events written before reviewer tokens were recorded still load. */
+  reviewer_usage?: ReviewerUsage | null;
+  /** Optional so events written before this field existed still load. */
+  self_accepted?: boolean;
 }
 
 export interface TaskRedispatchPayload {
@@ -315,6 +334,8 @@ export type EvenerEvent = {
 export interface ClassifierPrice {
   input_per_mtok: number;
   output_per_mtok: number;
+  /** Optional peak schedule name resolved against `pricing.peak_schedules`. */
+  peak?: string;
 }
 
 export interface ClassifierConfig {
@@ -491,15 +512,29 @@ export interface ArmPolicy {
 // Pricing schema (spec §5)
 // ---------------------------------------------------------------------------
 
+export interface PeakSchedule {
+  /** IANA time zone, e.g. "Asia/Shanghai". */
+  tz: string;
+  /** "HH:MM-HH:MM" windows in local time; v1 does not wrap past midnight. */
+  windows: string[];
+  weekdays_only: boolean;
+  /** Multiplier applied inside a window. */
+  factor: number;
+}
+
 export interface ModelPrice {
   input_per_mtok: number;
   cached_input_per_mtok: number;
   output_per_mtok: number;
+  /** Optional peak schedule name resolved against `peak_schedules`. */
+  peak?: string;
 }
 
 export interface Pricing {
   schema_version: 1;
   models: Record<string, ModelPrice>;
+  /** Optional so a flat pricing file (no peak windows) still validates. */
+  peak_schedules?: Record<string, PeakSchedule>;
 }
 
 // ---------------------------------------------------------------------------

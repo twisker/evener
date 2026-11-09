@@ -46,11 +46,19 @@ export interface ParsedRun {
   tool_calls: number | null;
   completed: boolean;
   model: string | null;
+  /** Null when the stream had no usable timing information. */
+  model_ms: number | null;
+  /** Null when the stream had no usable timing information. */
+  tool_ms: number | null;
 }
 
 export interface RunParser {
   onLine(obj: unknown, raw: string): void;
-  result(): ParsedRun;
+  /**
+   * Parsed result. `wallMs` is the measured process wall time; when omitted the
+   * parser falls back to the stream's own first→last timestamp span.
+   */
+  result(wallMs?: number): ParsedRun;
 }
 
 export interface TargetAdapter {
@@ -261,12 +269,15 @@ interface FinishInput {
   wallMs: number;
   usage: NormalisedUsage;
   usageRaw: unknown;
-  cost: { cost_usd: number; cost_unknown: boolean };
+  /** Model actually used for pricing; defaults to the target's model. */
+  model: string | null;
   diffStats: DiffStats | null;
   toolCalls: number | null;
   exitCode: number | null;
   sessionId: string | null;
   outputPath: string | null;
+  modelMs: number | null;
+  toolMs: number | null;
   /** False for pre-spawn failures such as a missing API key. */
   countsForCircuit: boolean;
 }
@@ -326,19 +337,23 @@ export async function runDispatch(opts: RunDispatchOptions): Promise<DispatchRes
 
   const emitFinished = (input: FinishInput): DispatchResult => {
     const ts = opts.now();
+    const priced = priceUsage(input.usage, input.model, pricing, new Date(ts));
     const payload: DispatchFinishedPayload & { cost_unknown: boolean } = {
       status: input.status,
       wall_ms: input.wallMs,
       usage: input.usage,
       usage_raw: asUsageRaw(input.usageRaw),
-      cost_usd: input.cost.cost_usd,
+      cost_usd: priced.cost_usd,
       price_table_version: opts.pricingVersion,
       diff_stats: input.diffStats,
       tool_calls: input.toolCalls,
       exit_code: input.exitCode,
       target_session_id: input.sessionId,
       output_path: input.outputPath,
-      cost_unknown: input.cost.cost_unknown,
+      model_ms: input.modelMs,
+      tool_ms: input.toolMs,
+      pricing_period: priced.pricing_period,
+      cost_unknown: priced.cost_unknown,
     };
     store.appendEvent(makeEvent(task, "dispatch.finished", ts, payload));
 
@@ -363,7 +378,7 @@ export async function runDispatch(opts: RunDispatchOptions): Promise<DispatchRes
       status: input.status,
       wall_ms: input.wallMs,
       usage: input.usage,
-      cost_usd: input.cost.cost_usd,
+      cost_usd: priced.cost_usd,
       output_path: input.outputPath,
       target_session_id: input.sessionId,
       exit_code: input.exitCode,
@@ -371,19 +386,20 @@ export async function runDispatch(opts: RunDispatchOptions): Promise<DispatchRes
   };
 
   // Pre-checks run before any process is spawned (spec §7).
-  const zeroCost = priceUsage(zeroUsage(), model, pricing);
   if (missingApiKey(targetPolicy, opts.env)) {
     return emitFinished({
       status: "error",
       wallMs: 0,
       usage: zeroUsage(),
       usageRaw: {},
-      cost: zeroCost,
+      model,
       diffStats: null,
       toolCalls: null,
       exitCode: null,
       sessionId: null,
       outputPath: null,
+      modelMs: null,
+      toolMs: null,
       countsForCircuit: false,
     });
   }
@@ -393,12 +409,14 @@ export async function runDispatch(opts: RunDispatchOptions): Promise<DispatchRes
       wallMs: 0,
       usage: zeroUsage(),
       usageRaw: {},
-      cost: zeroCost,
+      model,
       diffStats: null,
       toolCalls: null,
       exitCode: null,
       sessionId: null,
       outputPath: null,
+      modelMs: null,
+      toolMs: null,
       countsForCircuit: false,
     });
   }
@@ -444,7 +462,7 @@ export async function runDispatch(opts: RunDispatchOptions): Promise<DispatchRes
   }
 
   const after = await gitDiffStats(opts.cwd);
-  const parsed = parser.result();
+  const parsed = parser.result(processResult.wallMs);
 
   const status: DispatchStatus = processResult.timedOut
     ? "timeout"
@@ -453,7 +471,6 @@ export async function runDispatch(opts: RunDispatchOptions): Promise<DispatchRes
       : "error";
 
   const usage = parsed.usage ?? zeroUsage();
-  const cost = priceUsage(usage, parsed.model ?? model, pricing);
   const diffStats = before !== null && after !== null ? nonNegativeDifference(after, before) : null;
 
   let outputPath: string | null = null;
@@ -468,12 +485,14 @@ export async function runDispatch(opts: RunDispatchOptions): Promise<DispatchRes
     wallMs: processResult.wallMs,
     usage,
     usageRaw: parsed.usage_raw,
-    cost,
+    model: parsed.model ?? model,
     diffStats,
     toolCalls: parsed.tool_calls,
     exitCode: processResult.exitCode,
     sessionId: parsed.target_session_id,
     outputPath,
+    modelMs: parsed.model_ms,
+    toolMs: parsed.tool_ms,
     countsForCircuit: status === "error" || status === "timeout",
   });
 }
@@ -557,6 +576,9 @@ export async function recordHostRound(opts: RecordHostRoundOptions): Promise<Hos
     exit_code: null,
     target_session_id: null,
     output_path: null,
+    model_ms: null,
+    tool_ms: null,
+    pricing_period: "flat",
     cost_unknown: opts.costUsd === undefined,
   };
 

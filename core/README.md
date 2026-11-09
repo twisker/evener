@@ -47,6 +47,33 @@ on weekdays (public holidays are not modelled). Every `dispatch.finished` record
 prices accept the same `peak: <schedule>` key. `pricingPeriod(schedule, at)` is the exported
 classifier used by both the dispatcher and those inline-price call sites.
 
+## Web panel
+
+`evener ui` starts a local, read-only dashboard over the same SQLite store and
+`runs/` directory the CLI uses. It binds `127.0.0.1` only; the default port is
+7331 and `--port 0` asks the OS for a free port. The command prints
+`{url, home, pid}` immediately, opens the browser unless `--no-open` is given, and
+serves until SIGINT/SIGTERM. There is no authentication and no mutating route.
+
+```sh
+node core/dist/src/cli.js ui --port 7331 --no-open
+```
+
+| Route | Returns |
+|---|---|
+| `GET /` | `core/ui/index.html`, with `Cache-Control: no-store` |
+| `GET /api/overview` | `{now, home, policy_name, policy_version, experiment_mode, arms: string[], pricing_version, open_tasks, tasks_7d, accepted_7d, cost_7d_usd}` |
+| `GET /api/tasks?state=open\|closed\|all&since=&limit=&host_session=` | `{tasks: TaskSummary[]}` newest first; `state` default `open`, `limit` default 50 |
+| `GET /api/task/:id` | `{task: TaskRow, rounds: RoundView[], events: EvenerEvent[]}` |
+| `GET /api/task/:id/output?round=n&stream=out\|stderr&tail=BYTES` | `text/plain` body of `runs/<task>/<round>.out.md` (or `.stderr`); last `tail` bytes when given; 404 when absent |
+| `GET /api/report?since=&by=` | the `Report` object of `evener report --format json` |
+| `GET /api/sessions?since=` | `{sessions: SessionView[]}` newest first |
+| `GET /api/stream` | `text/event-stream`; one `change` event with `{seq}` when `max(events.seq)` grows (polled every 1 s); `: ping` every 15 s |
+
+The page (`core/ui/index.html`) is a single static file with inline CSS/JS/SVG,
+bilingual labels, light/dark support and a 390 px layout. All arithmetic happens in
+core; the page only renders API values.
+
 ## Commands implemented so far
 
 | Command | Description |
@@ -55,6 +82,7 @@ classifier used by both the dispatcher and those inline-price call sites.
 | `policy validate [--file]` | Validate a policy file (exit 2 on errors) |
 | `policy show [--file]` | Print the effective policy as JSON |
 | `policy hash [--file]` | Print the canonical policy version |
+| `ui [--port N] [--no-open]` | Serve the local read-only web panel |
 
 All commands print one JSON object on stdout. Errors print
 `{error: {code, message}}` and exit non-zero.

@@ -13,6 +13,7 @@ import { register as registerRouter } from "./commands/router.js";
 import { register as registerDispatch } from "./commands/dispatch.js";
 import { register as registerLifecycle } from "./commands/lifecycle.js";
 import { register as registerReport } from "./commands/report.js";
+import { register as registerUi } from "./commands/ui.js";
 
 export type { CliIO, CliSink, CommandHandler, CommandRegistry } from "./commands/types.js";
 export { CommandError as CliError } from "./commands/types.js";
@@ -114,6 +115,7 @@ registerRouter(commands);
 registerDispatch(commands);
 registerLifecycle(commands);
 registerReport(commands);
+registerUi(commands);
 
 /**
  * `report` is implemented by a later task. Register a placeholder when the
@@ -145,6 +147,7 @@ const commandUsages: Readonly<Record<string, string>> = {
   override: "override --task T --to X",
   sweep: "sweep --host-session S",
   report: "report [--since 14d|YYYY-MM-DD] [--by label] [--format md|json] [--out FILE]",
+  ui: "ui [--port N] [--no-open]",
   help: "help",
 };
 

@@ -95,8 +95,8 @@ apply the policy; leave it `null` to route with rules and the fallback table onl
 The analysis labeler (label, time bucket, has-repro, used only to stratify reports) calls
 `deepseek-flash` with `DEEPSEEK_API_KEY` by default, costing about $0.0001 per task; if the key
 is missing or the call fails it falls back to keyword heuristics and `task create` prints a
-warning. Set `labeler.model: null` for heuristics only. Prices in `pricing.yaml` are DeepSeek
-peak-tier list prices (off-peak is half; not modelled, see `design/decisions-for-user.md` D21).
+warning. Set `labeler.model: null` for heuristics only. Prices in `pricing.yaml` are list prices; DeepSeek's peak windows are
+modelled by `peak_schedules` (see `design/decisions-for-user.md` D21).
 
 ## Repository layout
 

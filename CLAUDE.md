@@ -19,7 +19,7 @@ Evener is an open-source plugin that routes delegated coding tasks from a host h
 - **Code layering**: host-independent core (CLI + library) in `core/`; thin per-host adapters in `adapters/` that only do marketplace packaging and event wiring.
 - **Host interface**: mechanism is fixed per host (Claude Code: a skill calls `evener decide` / `evener report`; Stop and SubagentStop hooks as safety net). Behavior (which tasks are routed, confirmation) is configurable.
 - **Success metric**: ability to *distinguish* two policies' cost-efficiency at a given threshold, not absolute savings.
-- **Non-goals**: decomposition, context assembly, acceptance, token proxy, quota rotation, GUI (v1).
+- **Non-goals**: decomposition, context assembly, acceptance, token proxy, quota rotation, GUI embedded in the host. A local read-only web panel (`evener ui`, spec §13) is in scope since 2026-11-09 (D22).
 
 ## Decisions taken 2026-11-09 (see design/spec-v1.md §2 and design/decisions-for-user.md)
 

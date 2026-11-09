@@ -141,6 +141,9 @@ dispatch.finished:
   exit_code: int|null
   target_session_id: string|null      # codex thread_id / dsh sessionId
   output_path: string|null            # file holding final message
+  model_ms: int|null                  # time the target spent waiting on its model (sum of step/turn durations); null if the stream has no timing
+  tool_ms: int|null                   # time spent in tool/command execution; null if unknown
+  pricing_period: peak|off|flat       # which price tier `cost_usd` used (flat = model has no peak schedule)
 
 acceptance.finished:
   verdict: accepted|rejected
@@ -149,6 +152,8 @@ acceptance.finished:
   reject_reason: tests_failed|build_failed|out_of_scope|incomplete|style|misunderstood|regression|other|null
   reviewer_cost_usd: number
   reviewer_wall_ms: int
+  reviewer_usage: {input: int, cached_input: int, output: int}|null   # host tokens spent on acceptance, when the host can report them
+  self_accepted: bool                 # true when the round target was `host` (the session that did the work also accepted it)
 
 task.redispatch:
   reason: string                      # the reject_reason that triggered it
@@ -322,10 +327,12 @@ top-level because labels are experiment-wide. The effective `policy_version` is 
 schema_version: 1
 models:
   gpt-5.1-codex:   {input_per_mtok: 1.25, cached_input_per_mtok: 0.125, output_per_mtok: 10.0}
-  deepseek-flash:  {input_per_mtok: 0.30, cached_input_per_mtok: 0.006, output_per_mtok: 1.20}   # peak price; off-peak is half
-  deepseek-v4-pro: {input_per_mtok: 1.32, cached_input_per_mtok: 0.044, output_per_mtok: 3.96}
+  deepseek-flash:  {input_per_mtok: 0.15, cached_input_per_mtok: 0.003, output_per_mtok: 0.60, peak: deepseek}
+  deepseek-v4-pro: {input_per_mtok: 0.66, cached_input_per_mtok: 0.022, output_per_mtok: 1.98, peak: deepseek}
+peak_schedules:                     # a model whose price names a schedule is billed price × factor inside the windows
+  deepseek: {tz: Asia/Shanghai, windows: ["09:00-12:00", "14:00-18:00"], weekdays_only: true, factor: 2}
 ```
-Prices were checked against third-party mirrors of the DeepSeek price list on 2026-11-09 (peak tier; DeepSeek bills half off-peak, which v1 does not model) and are still **for the user to confirm** (decisions-for-user.md D3, D21).
+Prices are the published list prices (for DeepSeek the list price is the off-peak price; `peak_schedules` doubles it inside the peak windows, 01:00–04:00 and 06:00–10:00 UTC on weekdays, expressed here in Asia/Shanghai). Checked against third-party mirrors on 2026-11-09; still **for the user to confirm** (decisions-for-user.md D3, D21). Every `dispatch.finished` records which tier it used in `pricing_period`; the classifier and labeler inline `price` objects accept the same optional `peak: <schedule>` key.
 `price_table_version` = first 12 hex of sha256 of the file.
 
 ## 6. Routing algorithm (`evener decide`)
@@ -407,6 +414,8 @@ Sections exactly as PRD §5. Definitions:
 
 Weekly generation: `evener report --out $EVENER_HOME/reports/weekly-<date>.md` is documented for cron; the CLI does not schedule itself.
 
+Per-session accounting (which host session spent what, split into delegated cost, host rounds, acceptance overhead, classifier+labeler overhead, and peak vs off-peak) is served by the web panel (§13 `/api/sessions`); it is not part of the markdown report in v1.
+
 ## 10. Claude Code adapter
 
 - `.claude-plugin/plugin.json`: name `evener`, version from core, description, author.
@@ -439,8 +448,67 @@ All commands print one JSON object on stdout (or markdown for `report --format m
 | `apply <n> [--arm A] [--report FILE]` | `{field, from, to, policy_version}` |
 | `export --format jsonl|otel [--since]` | writes to stdout |
 | `rebuild` | `{tasks}` rebuilt from events |
+| `ui [--port N] [--no-open]` | prints `{url, home, pid}` then serves the read-only web panel (§13) until SIGINT |
 
 ## 12. Non-goals restated
 
 No task decomposition, no context assembly, no acceptance review inside Evener, no token proxy,
-no quota rotation, no GUI, no scheduler, no auto-apply.
+no quota rotation, no scheduler, no auto-apply. No GUI *inside the host*; the local read-only web panel of §13 is in scope since 2026-11-09 (D22).
+
+## 13. Web panel (`evener ui`)
+
+Decided 2026-11-09 (D22). A local, read-only dashboard over the same SQLite store and `runs/` directory the CLI uses. No new runtime dependency: `node:http`, one static HTML file with inline CSS/JS/SVG, no bundler, no CDN. All arithmetic happens in core (server side); the page only renders.
+
+```
+evener ui [--port N] [--no-open]
+```
+
+- Binds `127.0.0.1:N` (default 7331; `0` picks a free port). Prints `{url, home, pid}` on stdout, opens the browser (`open` / `xdg-open` / `start`) unless `--no-open`, then serves until SIGINT. Never binds a non-loopback address; no auth; no mutating route in v1.
+- Static: `GET /` → `core/ui/index.html` (`Cache-Control: no-store`). `core/package.json` `files` includes `ui`.
+- All JSON routes return `{error: {code, message}}` with 400/404/500 on failure. `since` accepts the same forms as `report --since`.
+
+| Route | Returns |
+|---|---|
+| `GET /api/overview` | `{now, home, policy_name, policy_version, experiment_mode, arms: string[], pricing_version, open_tasks, tasks_7d, accepted_7d, cost_7d_usd}` |
+| `GET /api/tasks?state=open\|closed\|all&since=&limit=&host_session=` | `{tasks: TaskSummary[]}` newest first; `state` default `open`, `limit` default 50 |
+| `GET /api/task/:id` | `{task: TaskRow, rounds: RoundView[], events: EvenerEvent[]}` |
+| `GET /api/task/:id/output?round=n&stream=out\|stderr&tail=BYTES` | `text/plain` body of `runs/<task>/<round>.out.md` (or `.stderr`); last `tail` bytes when given; 404 when absent |
+| `GET /api/report?since=&by=` | the `Report` object of `evener report --format json` |
+| `GET /api/sessions?since=` | `{sessions: SessionView[]}` newest first |
+| `GET /api/stream` | `text/event-stream`; one `change` event with `{seq}` each time `max(events.seq)` grows (server polls SQLite every 1 s); a `: ping` comment every 15 s |
+
+```
+TaskSummary = TaskRow + {
+  current_model: string|null,        # dispatch.started.model of the current round
+  started_ts: string|null,           # dispatch.started.ts of the current round
+  running_ms: int|null,              # now − started_ts while state == dispatching, else null
+  last_event_type: string, last_event_ts: string,
+  description_excerpt: string|null }
+
+RoundView = {
+  round, target, model, decided_by, rule_id, rationale, arm, escalated_from,
+  dispatch_status: success|error|timeout|budget_exceeded|running|null,
+  wall_ms, model_ms, tool_ms, usage, cost_usd, pricing_period,
+  verdict, reject_reason, checks, review_verdict, reviewer_cost_usd, self_accepted,
+  output_path, stderr_path,
+  redispatch: {kind, next_target, reason}|null }
+
+SessionView = {
+  host_session_id, host, first_ts, last_ts, tasks, accepted, open,
+  delegated_cost_usd,                # dispatch.finished.cost_usd for non-host targets
+  host_round_cost_usd,               # dispatch.finished.cost_usd for target host
+  reviewer_cost_usd,                 # Σ acceptance.finished.reviewer_cost_usd
+  overhead_cost_usd,                 # Σ classifier_cost_usd + labeler_cost_usd
+  total_cost_usd, peak_cost_usd, off_cost_usd,
+  reviewer_tokens: {input, cached_input, output}|null,
+  targets: {<target>: count} }
+```
+
+Page (`core/ui/index.html`): four views in one file, bilingual labels like the markdown report, light/dark via `prefers-color-scheme`, works at 390 px width.
+
+1. **Live / 实时** — open tasks as rows (label, target, model, round, running time, state dot), orphan highlight when `dispatching` and no `dispatch.finished` after `limits.max_wall_per_round_s`; selecting a row tails its output with `/api/task/:id/output?tail=4096` refreshed on each `change` event.
+2. **Task / 回放** — per-round cards ✓ / · / ! with target, decision reason, cost, wall, model vs tool time, verdict and reject reason, link to output; events list collapsed.
+3. **Compare / 对比** — arms table (CPAT, quality, 性价比, CI, MDD), strata by `--by` dimension as grouped bars (hand-drawn SVG), target profiles, alerts, suggestions; shows `insufficient` exactly where the report does.
+4. **Sessions / 会话** — one row per host session: stacked bar delegated / host rounds / acceptance / overhead, peak vs off share, targets used.
+
+The page refreshes on `change` events (fallback: poll every 5 s if SSE fails). It never computes statistics itself; every number comes from the API.

@@ -88,6 +88,9 @@ Everything lives in `$EVENER_HOME` (default `~/.evener`):
 | `runs/<task>/<round>.out.md` | the target's final message; `.stderr` next to it |
 | `reports/<ts>.json` | saved reports, the source for `evener apply` |
 
+Run `evener ui` to open the local read-only web panel (live tasks, per-round replay, policy
+comparison, per-session cost split); it binds 127.0.0.1 only and needs no extra dependency.
+
 Set `classifier.model` (any OpenAI-compatible endpoint; key via `api_key_env`) to let a cheap model
 apply the policy; leave it `null` to route with rules and the fallback table only. Set
 `experiment.mode: interleave` and two arm files to A/B-compare policies.

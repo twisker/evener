@@ -78,6 +78,70 @@ async function initHome(home: string): Promise<void> {
   assert.equal(result.payload.db_path, join(home, "evener.sqlite"));
 }
 
+/**
+ * Full-day schedule so the current clock is always inside the peak window.
+ * The policy's inline prices name the `deepseek` schedule.
+ */
+const PEAK_PRICING_YAML = `schema_version: 1
+models:
+  deepseek-flash: {input_per_mtok: 0.15, cached_input_per_mtok: 0.003, output_per_mtok: 0.60, peak: deepseek}
+peak_schedules:
+  deepseek: {tz: UTC, windows: ["00:00-23:59"], weekdays_only: false, factor: 2}
+`;
+
+const LABELER_FETCH: typeof fetch = async () =>
+  new Response(
+    JSON.stringify({
+      choices: [
+        {
+          message: {
+            content: '{"label":"bugfix","time_bucket":"1h_4h","has_repro":true}',
+          },
+        },
+      ],
+      usage: { prompt_tokens: 1_000_000, completion_tokens: 500_000 },
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
+
+async function labelerCost(home: string, peak: boolean): Promise<number> {
+  await initHome(home);
+  if (peak) {
+    writeFileSync(join(home, "pricing.yaml"), PEAK_PRICING_YAML, "utf8");
+  } else {
+    rmSync(join(home, "pricing.yaml"));
+  }
+
+  const descriptionFile = join(home, "description.txt");
+  writeFileSync(descriptionFile, "Fix the crash in src/main.ts", "utf8");
+  const created = await run<CreateOutput>(
+    [
+      "task",
+      "create",
+      "--home",
+      home,
+      "--description-file",
+      descriptionFile,
+      "--cwd",
+      home,
+    ],
+    { env: { DEEPSEEK_API_KEY: "env-secret" }, fetchImpl: LABELER_FETCH },
+  );
+  assert.equal(created.code, 0);
+  assert.equal(created.payload.labeler_model, "deepseek-flash");
+
+  const status = await run<StatusOutput>([
+    "status",
+    "--home",
+    home,
+    "--task",
+    created.payload.task_id,
+  ]);
+  const data = status.payload.events[0]?.data;
+  assert.ok(data !== undefined);
+  return Number(data["labeler_cost_usd"]);
+}
+
 interface CreateOutput {
   task_id: string;
   analysis_label: Label;
@@ -296,6 +360,14 @@ test("task create uses the model labeler by default and reports no warnings", as
   assert.equal(data["labeler_model"], "deepseek-flash");
   assert.ok(Math.abs(Number(data["labeler_cost_usd"]) - 0.0000402) < 1e-12);
   assert.ok(Number(data["labeler_latency_ms"]) >= 0);
+});
+
+test("task create doubles labeler cost when the inline price is in a peak window", async (t) => {
+  const flat = await labelerCost(tempDir(t), false);
+  const peak = await labelerCost(tempDir(t), true);
+
+  assert.ok(flat > 0);
+  assert.ok(Math.abs(peak - flat * 2) < 1e-12, `flat ${flat}, peak ${peak}`);
 });
 
 test("task create warns on stderr and exits 0 when the key is missing", async (t) => {

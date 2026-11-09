@@ -3,8 +3,10 @@
  *
  * The child receives `stdinText` and EOF; every complete stdout line is handed
  * to `onLine` either as parsed JSON or, when the line is not valid JSON, as
- * `(null, raw)`. Stderr is captured up to 1 MiB. A timeout sends SIGTERM and
- * then SIGKILL five seconds later.
+ * `null`. `arrivedAtMs` is the `Date.now()` reading taken when the line was
+ * parsed; adapters use it as the fallback when the stream has no timestamps.
+ * Stderr is captured up to 1 MiB. A timeout sends SIGTERM and then SIGKILL five
+ * seconds later.
  */
 
 import { spawn } from "node:child_process";
@@ -24,7 +26,8 @@ export interface RunJsonlProcessOptions {
   stdinText: string;
   timeoutMs: number;
   env: Readonly<Record<string, string | undefined>>;
-  onLine: (obj: unknown, raw: string) => void;
+  /** `arrivedAtMs` lets adapters time events without stream timestamps. */
+  onLine: (obj: unknown, arrivedAtMs: number, raw: string) => void;
   /** Injectable for tests; defaults to `node:child_process.spawn`. */
   spawnImpl?: typeof spawn;
 }
@@ -36,7 +39,11 @@ export interface JsonlProcessResult {
   wallMs: number;
 }
 
-function parseLine(onLine: RunJsonlProcessOptions["onLine"], raw: string): void {
+function parseLine(
+  onLine: RunJsonlProcessOptions["onLine"],
+  raw: string,
+  arrivedAtMs: number,
+): void {
   const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
   if (line.length === 0) return;
 
@@ -44,10 +51,10 @@ function parseLine(onLine: RunJsonlProcessOptions["onLine"], raw: string): void 
   try {
     parsed = JSON.parse(line);
   } catch {
-    onLine(null, raw);
+    onLine(null, arrivedAtMs, raw);
     return;
   }
-  onLine(parsed, raw);
+  onLine(parsed, arrivedAtMs, raw);
 }
 
 /**
@@ -94,7 +101,7 @@ export function runJsonlProcess(opts: RunJsonlProcessOptions): Promise<JsonlProc
       if (stdoutBuffer.length === 0) return;
       const raw = stdoutBuffer;
       stdoutBuffer = "";
-      parseLine(opts.onLine, raw);
+      parseLine(opts.onLine, raw, Date.now());
     };
 
     const settle = (exitCode: number | null): void => {
@@ -121,7 +128,7 @@ export function runJsonlProcess(opts: RunJsonlProcessOptions): Promise<JsonlProc
         while (newline !== -1) {
           const raw = stdoutBuffer.slice(0, newline);
           stdoutBuffer = stdoutBuffer.slice(newline + 1);
-          parseLine(opts.onLine, raw);
+          parseLine(opts.onLine, raw, Date.now());
           newline = stdoutBuffer.indexOf("\n");
         }
       });

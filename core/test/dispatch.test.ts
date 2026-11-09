@@ -93,6 +93,55 @@ class FakeChild extends EventEmitter {
   }
 }
 
+interface TimedLine {
+  text: string;
+  /** Delay before this line is written, in milliseconds. */
+  delayMs?: number;
+}
+
+/**
+ * Fake child that writes JSONL lines with controlled gaps so arrival-time
+ * measurement can be exercised without a real target process.
+ */
+function fakeSpawnTimed(lines: TimedLine[], calls: SpawnCall[]): typeof spawn {
+  const impl = (
+    command: string,
+    args?: readonly string[],
+    options?: { cwd?: string | URL },
+  ): ChildProcess => {
+    calls.push({
+      command,
+      args: [...(args ?? [])],
+      cwd: typeof options?.cwd === "string" ? options.cwd : undefined,
+    });
+
+    const child = new FakeChild();
+    setImmediate(() => {
+      let index = 0;
+      const writeNext = (): void => {
+        const entry = lines[index];
+        if (entry === undefined) {
+          child.stdout.end(() => {
+            child.stderr.end(() => {
+              child.finish(0);
+            });
+          });
+          return;
+        }
+        index += 1;
+        setTimeout(() => {
+          child.stdout.write(`${entry.text}\n`);
+          writeNext();
+        }, entry.delayMs ?? 0);
+      };
+      writeNext();
+    });
+    return child as unknown as ChildProcess;
+  };
+
+  return impl as unknown as typeof spawn;
+}
+
 function fakeSpawn(behavior: FakeBehavior, calls: SpawnCall[]): typeof spawn {
   const impl = (
     command: string,
@@ -246,7 +295,7 @@ function dispatchOptions(
 test("codex parser normalises usage, tool calls, session and completion", () => {
   const parser = createCodexParser();
   for (const line of parserLines(fixture("codex-run.jsonl"))) {
-    parser.onLine(JSON.parse(line), line);
+    parser.onLine(JSON.parse(line));
   }
   const parsed = parser.result();
 
@@ -264,7 +313,7 @@ test("codex parser normalises usage, tool calls, session and completion", () => 
 test("dsh parser sums step usage and keeps cache-write in usage_raw", () => {
   const parser = createDshParser();
   for (const line of parserLines(fixture("dsh-run.jsonl"))) {
-    parser.onLine(JSON.parse(line), line);
+    parser.onLine(JSON.parse(line));
   }
   const parsed = parser.result();
 
@@ -290,7 +339,7 @@ test("dsh parser sums step usage and keeps cache-write in usage_raw", () => {
 test("codex parser splits wall time into model and tool time from item timestamps", () => {
   const parser = createCodexParser();
   for (const line of parserLines(fixture("codex-timed.jsonl"))) {
-    parser.onLine(JSON.parse(line), line);
+    parser.onLine(JSON.parse(line));
   }
 
   const parsed = parser.result(5000);
@@ -302,7 +351,7 @@ test("codex parser splits wall time into model and tool time from item timestamp
 test("dsh parser splits step and tool time from timestamps", () => {
   const parser = createDshParser();
   for (const line of parserLines(fixture("dsh-timed.jsonl"))) {
-    parser.onLine(JSON.parse(line), line);
+    parser.onLine(JSON.parse(line));
   }
 
   const parsed = parser.result(5000);
@@ -311,9 +360,209 @@ test("dsh parser splits step and tool time from timestamps", () => {
   assert.equal((parsed.model_ms ?? 0) + (parsed.tool_ms ?? 0), 4000);
 });
 
+test("dsh measures two tool pairs by arrival and derives model time from wall", async (t) => {
+  const h = harness(t);
+  const task = seedRoutedTask(h.store, "dsh");
+  const calls: SpawnCall[] = [];
+  const lines: TimedLine[] = [
+    { text: '{"type":"session","sessionId":"session-arrival"}' },
+    { text: '{"type":"status","phase":"turn_start","turn":1}' },
+    { text: '{"type":"status","phase":"step_start","turn":1,"step":1}' },
+    { text: '{"type":"tool_call","callId":"call-a","tool":"read_file","input":{}}' },
+    { text: '{"type":"tool_result","callId":"call-a","status":"ok","result":"a"}', delayMs: 30 },
+    { text: '{"type":"tool_call","callId":"call-b","tool":"read_file","input":{}}' },
+    { text: '{"type":"tool_result","callId":"call-b","status":"ok","result":"b"}', delayMs: 50 },
+    {
+      text: '{"type":"status","phase":"step_end","turn":1,"step":1,"usage":{"inputTokens":10,"outputTokens":2,"cacheReadTokens":0,"cacheWriteTokens":0}}',
+    },
+    { text: '{"type":"final","sessionId":"session-arrival","reason":{"kind":"completed"},"text":"done"}' },
+  ];
+
+  await runDispatch(
+    dispatchOptions(h, task, {
+      target: "dsh",
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      spawnImpl: fakeSpawnTimed(lines, calls),
+    }),
+  );
+
+  const finished = h.store
+    .getEvents(task.task_id)
+    .find((event) => event.type === "dispatch.finished");
+  assert.ok(finished !== undefined && finished.type === "dispatch.finished");
+  const toolMs = finished.data.tool_ms ?? null;
+  assert.notEqual(toolMs, null);
+  if (toolMs === null) return;
+  assert.ok(toolMs >= 80 && toolMs <= 200, `tool_ms ${toolMs}`);
+  assert.equal(finished.data.model_ms, Math.max(0, finished.data.wall_ms - toolMs));
+});
+
+test("dsh reports zero tool time and the whole wall as model time without tool calls", async (t) => {
+  const h = harness(t);
+  const task = seedRoutedTask(h.store, "dsh");
+  const calls: SpawnCall[] = [];
+  const lines: TimedLine[] = [
+    { text: '{"type":"session","sessionId":"session-no-tools"}' },
+    { text: '{"type":"status","phase":"turn_start","turn":1}' },
+    { text: '{"type":"status","phase":"step_start","turn":1,"step":1}' },
+    {
+      text: '{"type":"status","phase":"step_end","turn":1,"step":1,"usage":{"inputTokens":10,"outputTokens":2,"cacheReadTokens":0,"cacheWriteTokens":0}}',
+      delayMs: 20,
+    },
+    { text: '{"type":"final","sessionId":"session-no-tools","reason":{"kind":"completed"},"text":"done"}' },
+  ];
+
+  await runDispatch(
+    dispatchOptions(h, task, {
+      target: "dsh",
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      spawnImpl: fakeSpawnTimed(lines, calls),
+    }),
+  );
+
+  const finished = h.store
+    .getEvents(task.task_id)
+    .find((event) => event.type === "dispatch.finished");
+  assert.ok(finished !== undefined && finished.type === "dispatch.finished");
+  assert.equal(finished.data.tool_ms, 0);
+  assert.equal(finished.data.model_ms, finished.data.wall_ms);
+});
+
+test("dsh ignores a tool_call that never has a matching tool_result", async (t) => {
+  const h = harness(t);
+  const task = seedRoutedTask(h.store, "dsh");
+  const calls: SpawnCall[] = [];
+  const lines: TimedLine[] = [
+    { text: '{"type":"session","sessionId":"session-unmatched"}' },
+    { text: '{"type":"tool_call","callId":"orphan","tool":"read_file","input":{}}' },
+    { text: '{"type":"tool_call","callId":"paired","tool":"read_file","input":{}}' },
+    { text: '{"type":"tool_result","callId":"paired","status":"ok","result":"ok"}', delayMs: 30 },
+    { text: '{"type":"final","sessionId":"session-unmatched","reason":{"kind":"completed"},"text":"done"}' },
+  ];
+
+  await runDispatch(
+    dispatchOptions(h, task, {
+      target: "dsh",
+      env: { DEEPSEEK_API_KEY: "test-key" },
+      spawnImpl: fakeSpawnTimed(lines, calls),
+    }),
+  );
+
+  const finished = h.store
+    .getEvents(task.task_id)
+    .find((event) => event.type === "dispatch.finished");
+  assert.ok(finished !== undefined && finished.type === "dispatch.finished");
+  const toolMs = finished.data.tool_ms ?? null;
+  assert.notEqual(toolMs, null);
+  if (toolMs === null) return;
+  assert.ok(toolMs >= 30 && toolMs <= 150, `tool_ms ${toolMs}`);
+  assert.equal(finished.data.model_ms, Math.max(0, finished.data.wall_ms - toolMs));
+});
+
+test("codex measures two tool item pairs by arrival and derives model time from wall", async (t) => {
+  const h = harness(t);
+  const task = seedRoutedTask(h.store, "codex");
+  const calls: SpawnCall[] = [];
+  const usage =
+    '{"input_tokens":10,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":2,"reasoning_output_tokens":0}';
+  const lines: TimedLine[] = [
+    { text: '{"type":"thread.started","thread_id":"thread-arrival"}' },
+    { text: '{"type":"turn.started"}' },
+    { text: '{"type":"item.started","item":{"id":"item-a","type":"command_execution","command":"ls"}}' },
+    {
+      text: '{"type":"item.completed","item":{"id":"item-a","type":"command_execution","command":"ls","exit_code":0}}',
+      delayMs: 30,
+    },
+    { text: '{"type":"item.started","item":{"id":"item-b","type":"mcp_tool_call"}}' },
+    {
+      text: '{"type":"item.completed","item":{"id":"item-b","type":"mcp_tool_call"}}',
+      delayMs: 50,
+    },
+    { text: `{"type":"turn.completed","usage":${usage}}` },
+  ];
+
+  await runDispatch(
+    dispatchOptions(h, task, {
+      spawnImpl: fakeSpawnTimed(lines, calls),
+    }),
+  );
+
+  const finished = h.store
+    .getEvents(task.task_id)
+    .find((event) => event.type === "dispatch.finished");
+  assert.ok(finished !== undefined && finished.type === "dispatch.finished");
+  const toolMs = finished.data.tool_ms ?? null;
+  assert.notEqual(toolMs, null);
+  if (toolMs === null) return;
+  assert.ok(toolMs >= 80 && toolMs <= 200, `tool_ms ${toolMs}`);
+  assert.equal(finished.data.model_ms, Math.max(0, finished.data.wall_ms - toolMs));
+});
+
+test("codex reports zero tool time and the whole wall as model time without tool items", async (t) => {
+  const h = harness(t);
+  const task = seedRoutedTask(h.store, "codex");
+  const calls: SpawnCall[] = [];
+  const usage =
+    '{"input_tokens":10,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":2,"reasoning_output_tokens":0}';
+  const lines: TimedLine[] = [
+    { text: '{"type":"thread.started","thread_id":"thread-no-tools"}' },
+    { text: '{"type":"turn.started"}' },
+    { text: '{"type":"item.completed","item":{"id":"msg","type":"agent_message","text":"done"}}' },
+    { text: `{"type":"turn.completed","usage":${usage}}` },
+  ];
+
+  await runDispatch(
+    dispatchOptions(h, task, {
+      spawnImpl: fakeSpawnTimed(lines, calls),
+    }),
+  );
+
+  const finished = h.store
+    .getEvents(task.task_id)
+    .find((event) => event.type === "dispatch.finished");
+  assert.ok(finished !== undefined && finished.type === "dispatch.finished");
+  assert.equal(finished.data.tool_ms, 0);
+  assert.equal(finished.data.model_ms, finished.data.wall_ms);
+});
+
+test("codex ignores an item.started that never has a matching item.completed", async (t) => {
+  const h = harness(t);
+  const task = seedRoutedTask(h.store, "codex");
+  const calls: SpawnCall[] = [];
+  const usage =
+    '{"input_tokens":10,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":2,"reasoning_output_tokens":0}';
+  const lines: TimedLine[] = [
+    { text: '{"type":"thread.started","thread_id":"thread-unmatched"}' },
+    { text: '{"type":"item.started","item":{"id":"orphan","type":"command_execution","command":"ls"}}' },
+    { text: '{"type":"item.started","item":{"id":"paired","type":"command_execution","command":"ls"}}' },
+    {
+      text: '{"type":"item.completed","item":{"id":"paired","type":"command_execution","command":"ls","exit_code":0}}',
+      delayMs: 30,
+    },
+    { text: `{"type":"turn.completed","usage":${usage}}` },
+  ];
+
+  await runDispatch(
+    dispatchOptions(h, task, {
+      spawnImpl: fakeSpawnTimed(lines, calls),
+    }),
+  );
+
+  const finished = h.store
+    .getEvents(task.task_id)
+    .find((event) => event.type === "dispatch.finished");
+  assert.ok(finished !== undefined && finished.type === "dispatch.finished");
+  const toolMs = finished.data.tool_ms ?? null;
+  assert.notEqual(toolMs, null);
+  if (toolMs === null) return;
+  assert.ok(toolMs >= 30 && toolMs <= 150, `tool_ms ${toolMs}`);
+  assert.equal(finished.data.model_ms, Math.max(0, finished.data.wall_ms - toolMs));
+});
+
 test("runJsonlProcess passes non-JSON lines as null and captures stderr", async (t) => {
   const h = harness(t);
   const seen: unknown[] = [];
+  const arrivals: number[] = [];
   const calls: SpawnCall[] = [];
   const result = await runJsonlProcess({
     argv: ["fake", "--json"],
@@ -321,8 +570,9 @@ test("runJsonlProcess passes non-JSON lines as null and captures stderr", async 
     stdinText: "prompt",
     timeoutMs: 1000,
     env: {},
-    onLine: (obj, _raw) => {
+    onLine: (obj, arrivedAtMs) => {
       seen.push(obj);
+      arrivals.push(arrivedAtMs);
     },
     spawnImpl: fakeSpawn(
       {
@@ -334,6 +584,9 @@ test("runJsonlProcess passes non-JSON lines as null and captures stderr", async 
   });
 
   assert.deepEqual(seen, [{ a: 1 }, null, { b: 2 }]);
+  assert.equal(arrivals.length, 3);
+  assert.equal(arrivals.every((value) => typeof value === "number" && Number.isFinite(value)), true);
+  assert.ok((arrivals[2] ?? 0) >= (arrivals[0] ?? 0));
   assert.equal(result.exitCode, 0);
   assert.equal(result.timedOut, false);
   assert.equal(result.stderr, "warning: something\n");

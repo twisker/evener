@@ -16,6 +16,7 @@ import type {
   Label,
   Policy,
   PreFeatures,
+  Pricing,
   RouteCandidate,
   RouteDecidedPayload,
   Rule,
@@ -51,6 +52,8 @@ export interface DecideInput {
   env: Readonly<Record<string, string | undefined>>;
   now: string;
   fetchImpl?: typeof fetch;
+  /** Optional price table for the inline classifier price's peak schedule. */
+  pricing?: Pricing;
 }
 
 /** Error raised for state or target problems; the command maps it to a code. */
@@ -365,7 +368,14 @@ export async function decide(input: DecideInput): Promise<RouteDecision> {
 
   // 6. Classifier, when configured.
   if (armPolicy.classifier.model !== null) {
-    const result = await classifyTarget(armPolicy, features, env, input.fetchImpl);
+    const result = await classifyTarget(
+      armPolicy,
+      features,
+      env,
+      input.fetchImpl,
+      input.pricing,
+      new Date(now),
+    );
     if (result.ok) {
       if (isAvailable(armPolicy, result.target, open)) {
         const candidates = Object.entries(result.scores)

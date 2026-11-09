@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
+import { stringify } from "yaml";
 import { runCli } from "../src/cli.js";
 import type { CliIO } from "../src/cli.js";
 import { defaultPolicy } from "../src/config.js";
@@ -486,21 +487,30 @@ interface Harness {
   stdout(): string;
 }
 
-function harness(): Harness {
+interface RunOptions {
+  env?: Readonly<Record<string, string | undefined>>;
+  fetchImpl?: typeof fetch;
+}
+
+function harness(options: RunOptions = {}): Harness {
   const out: string[] = [];
-  const io: CliIO = {
+  const io: CliIO & { fetchImpl?: typeof fetch } = {
     stdout: (text) => {
       out.push(text);
     },
     stderr: () => undefined,
-    env: {},
+    env: options.env ?? {},
     cwd: process.cwd(),
+    ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
   };
   return { io, stdout: () => out.join("") };
 }
 
-async function run<T>(argv: string[]): Promise<{ code: number; payload: T }> {
-  const h = harness();
+async function run<T>(
+  argv: string[],
+  options: RunOptions = {},
+): Promise<{ code: number; payload: T }> {
+  const h = harness(options);
   const code = await runCli(argv, h.io);
   const text = h.stdout();
   assert.ok(text.length > 0, `no output for ${argv.join(" ")}`);
@@ -534,6 +544,65 @@ async function createTask(
   ]);
   assert.equal(created.code, 0);
   return created.payload.task_id;
+}
+
+/** Full-day schedule so the current clock is always inside the peak window. */
+const PEAK_PRICING_YAML = `schema_version: 1
+models:
+  deepseek-flash: {input_per_mtok: 0.15, cached_input_per_mtok: 0.003, output_per_mtok: 0.60, peak: deepseek}
+peak_schedules:
+  deepseek: {tz: UTC, windows: ["00:00-23:59"], weekdays_only: false, factor: 2}
+`;
+
+function writeClassifierPolicy(home: string): void {
+  const policy = defaultPolicy();
+  policy.classifier.model = "classifier-1";
+  policy.classifier.api_key_env = "CLASSIFIER_KEY";
+  writeFileSync(join(home, "policy.yaml"), stringify(policy), "utf8");
+}
+
+const CLASSIFIER_FETCH: typeof fetch = async () =>
+  new Response(
+    JSON.stringify({
+      choices: [
+        {
+          message: {
+            content: '{"target":"dsh","scores":{"dsh":1},"rationale":"cheap"}',
+          },
+        },
+      ],
+      usage: { prompt_tokens: 1_000_000, completion_tokens: 500_000 },
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
+
+async function classifierCost(t: TestContext, peak: boolean): Promise<number> {
+  const home = tempDir(t);
+  assert.equal((await run<{ home: string }>(["init", "--home", home])).code, 0);
+  writeClassifierPolicy(home);
+  if (peak) {
+    writeFileSync(join(home, "pricing.yaml"), PEAK_PRICING_YAML, "utf8");
+  } else {
+    rmSync(join(home, "pricing.yaml"));
+  }
+
+  const taskId = await createTask(home, t, "Fix the startup crash");
+  const decided = await run<DecideOutput>(
+    ["decide", "--home", home, "--task", taskId],
+    {
+      env: { CLASSIFIER_KEY: "secret" },
+      fetchImpl: CLASSIFIER_FETCH,
+    },
+  );
+  assert.equal(decided.code, 0);
+  assert.equal(decided.payload.decided_by, "classifier");
+
+  const status = await run<{
+    events: { type: string; data: Record<string, unknown> }[];
+  }>(["status", "--home", home, "--task", taskId]);
+  const route = status.payload.events.find((event) => event.type === "route.decided");
+  assert.ok(route !== undefined);
+  return Number(route.data["classifier_cost_usd"]);
 }
 
 interface DecideOutput {
@@ -592,6 +661,14 @@ test("decide CLI routes once, persists route.decided and refuses a routed task",
   ]);
   assert.equal(again.code, 1);
   assert.equal(again.payload.error.code, "invalid_state");
+});
+
+test("decide doubles classifier cost when the inline price is in a peak window", async (t) => {
+  const flat = await classifierCost(t, false);
+  const peak = await classifierCost(t, true);
+
+  assert.ok(flat > 0);
+  assert.ok(Math.abs(peak - flat * 2) < 1e-12, `flat ${flat}, peak ${peak}`);
 });
 
 test("decide --dry-run prints without appending and private_path locks to host", async (t) => {

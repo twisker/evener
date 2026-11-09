@@ -10,6 +10,7 @@ import {
   defaultPolicy,
   loadEffectivePolicy,
   loadPolicy,
+  loadPricing,
   policyVersion,
 } from "../config.js";
 import { assignArm } from "../experiment.js";
@@ -22,6 +23,7 @@ import type {
   EventType,
   Policy,
   PreFeatures,
+  Pricing,
   TaskCreatedPayload,
 } from "../types.js";
 import { nowIso, sha256, uuid } from "../util.js";
@@ -112,6 +114,19 @@ function currentPolicyVersion(ctx: CommandContext): string {
   return loadEffectivePolicy(ctx.home).policy_version;
 }
 
+/**
+ * Pricing is optional for labeler/classifier costs: a missing or invalid file
+ * degrades to flat list prices instead of failing the command (spec §5).
+ */
+function optionalPricing(ctx: CommandContext): Pricing | undefined {
+  if (!existsSync(ctx.pricingPath)) return undefined;
+  try {
+    return loadPricing(ctx.pricingPath);
+  } catch {
+    return undefined;
+  }
+}
+
 function addConstraint(constraints: string[], constraint: string): void {
   if (!constraints.includes(constraint)) constraints.push(constraint);
 }
@@ -163,6 +178,7 @@ async function createTask(
   warnings: string[];
 }> {
   const topPolicy = loadTopPolicy(ctx);
+  const pricing = optionalPricing(ctx);
   const taskId = uuid();
   const preFeatures = computePreFeatures(
     options.description,
@@ -173,7 +189,7 @@ async function createTask(
   const labelled = await labelTask(
     options.description,
     topPolicy,
-    { env: ctx.io.env, fetchImpl: injectedFetch(ctx) },
+    { env: ctx.io.env, fetchImpl: injectedFetch(ctx), pricing },
     preFeatures,
   );
   // The model may revise the heuristic estimate; both paths need the same field.

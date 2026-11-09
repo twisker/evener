@@ -11,6 +11,7 @@ import {
   defaultPolicy,
   loadEffectivePolicy,
   loadPolicy,
+  loadPricing,
   policyVersion,
 } from "../config.js";
 import type { EffectivePolicy } from "../config.js";
@@ -20,6 +21,7 @@ import type { RouteDecision } from "../router.js";
 import type {
   EvenerEvent,
   Policy,
+  Pricing,
   RouteDecidedPayload,
   TaskCreatedPayload,
   TaskRow,
@@ -31,6 +33,16 @@ import type { CommandContext, CommandRegistry } from "./types.js";
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Tests embedders may put a `fetchImpl` on the CLI IO object, mirroring the
+ * optional parameter `decide`/`classifyTarget` accept. The real CLI leaves it
+ * unset and the transport uses the global `fetch`.
+ */
+function injectedFetch(ctx: CommandContext): typeof fetch | undefined {
+  const value = (ctx.io as { fetchImpl?: unknown }).fetchImpl;
+  return typeof value === "function" ? (value as typeof fetch) : undefined;
+}
 
 function requiredOption(values: Record<string, string | boolean | undefined>, key: string): string {
   const value = values[key];
@@ -58,6 +70,19 @@ function effectivePolicyForTask(ctx: CommandContext, task: TaskRow): EffectivePo
     return { policy: top, policy_version: policyVersion(top), arm: null };
   }
   return loadEffectivePolicy(ctx.home, { arm });
+}
+
+/**
+ * Pricing is optional for classifier costs: a missing or invalid file degrades
+ * to flat list prices instead of failing the command (spec §5).
+ */
+function optionalPricing(ctx: CommandContext): Pricing | undefined {
+  if (!existsSync(ctx.pricingPath)) return undefined;
+  try {
+    return loadPricing(ctx.pricingPath);
+  } catch {
+    return undefined;
+  }
 }
 
 function createdPayload(ctx: CommandContext, task: TaskRow): TaskCreatedPayload {
@@ -144,6 +169,7 @@ async function cmdDecide(ctx: CommandContext, argv: string[]): Promise<unknown> 
   const created = createdPayload(ctx, task);
   const now = nowIso();
 
+  const fetchImpl = injectedFetch(ctx);
   let decision: RouteDecision;
   try {
     decision = await decide({
@@ -154,6 +180,8 @@ async function cmdDecide(ctx: CommandContext, argv: string[]): Promise<unknown> 
       created,
       env: ctx.io.env,
       now,
+      pricing: optionalPricing(ctx),
+      ...(fetchImpl === undefined ? {} : { fetchImpl }),
     });
   } catch (err) {
     if (err instanceof RouterError) {

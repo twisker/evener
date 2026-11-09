@@ -53,7 +53,12 @@ export interface ParsedRun {
 }
 
 export interface RunParser {
-  onLine(obj: unknown, raw: string): void;
+  /**
+   * Feed one parsed line. `arrivedAtMs` is the dispatcher's arrival reading and
+   * is only used when the stream itself carries no timestamps; callers that
+   * only have the payload may omit it.
+   */
+  onLine(obj: unknown, arrivedAtMs?: number): void;
   /**
    * Parsed result. `wallMs` is the measured process wall time; when omitted the
    * parser falls back to the stream's own first→last timestamp span.
@@ -446,8 +451,8 @@ export async function runDispatch(opts: RunDispatchOptions): Promise<DispatchRes
       stdinText: promptText,
       timeoutMs,
       env: opts.env,
-      onLine: (obj, raw) => {
-        parser.onLine(obj, raw);
+      onLine: (obj, arrivedAtMs) => {
+        parser.onLine(obj, arrivedAtMs);
       },
       ...(opts.spawnImpl === undefined ? {} : { spawnImpl: opts.spawnImpl }),
     });

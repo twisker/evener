@@ -30,7 +30,8 @@ Evener is an open-source plugin that routes delegated coding tasks from a host h
 ## Known external facts (verified 2026-11-09)
 
 - Codex: `codex exec --json` emits JSONL; `turn.completed.usage` is **cumulative for the thread** (input / cached_input / cache_write_input / output / reasoning_output). A fresh `codex exec` per round equals per-round usage. `-o <path>` writes the final message; prompt `-` reads stdin.
-- dsh (`@deepseek-ai/dsh` 0.2.2-rc.1): `dsh --profile headless --json` emits JSONL; `status.step_end.usage` carries per-step `inputTokens/outputTokens/cacheReadTokens/cacheWriteTokens`; `final.reason.kind` + exit code give success. Pre-release; expect breaking changes.
+- dsh (`@deepseek-ai/dsh` 0.2.2-rc.1): `dsh --profile headless --json` emits JSONL; `status.step_end.usage` carries per-step `inputTokens/outputTokens/cacheReadTokens/cacheWriteTokens`; `final.reason.kind` + exit code give success. Pre-release; expect breaking changes. Headless runs use model `deepseek-flash` (seen in the session log; not in the JSON output).
+- DeepSeek API (2026-11-09): models are `deepseek-flash` (V4.1-Flash) and `deepseek-v4-pro`; `deepseek-chat` is an alias served by flash. Thinking is on by default; send `{"thinking":{"type":"disabled"}}` for classifier-style calls. Peak/off-peak billing, peak = 01–04 and 06–10 UTC weekdays.
 - Nearby project to be aware of: npm `harness-reins` (dispatch to any agent and route result back).
 
 ## How work is done in this repo

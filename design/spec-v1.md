@@ -105,6 +105,8 @@ task.created:
   pre_features: {description_chars: int, files_mentioned: int, repo_files: int|null, language: ts|js|py|go|rs|java|kt|rb|php|cs|cpp|c|swift|sh|sql|md|yaml|json|other|null, has_repro: bool, cross_file: bool, time_bucket: lt15m|15m_1h|1h_4h|gt4h|unknown}
   analysis_label: bugfix|feature|refactor|test|docs|mechanical|question|unknown
   labeler_model: string              # "heuristic" or model id
+  labeler_cost_usd: number|null      # null when heuristic
+  labeler_latency_ms: int|null
   constraints: [string]              # free-form tags from host, e.g. private_path
   arm: string|null                   # experiment arm assigned at creation
 
@@ -157,7 +159,7 @@ task.redispatch:
 task.closed:
   outcome: accepted|handed_to_human|abandoned
   total_rounds: int
-  total_cost_usd: number              # all dispatches + all acceptance + all classifier calls
+  total_cost_usd: number              # all dispatches + all acceptance + classifier calls + labeler call
   total_wall_ms: int
 
 user.feedback: {rating: up|down, comment: string|null}
@@ -202,12 +204,16 @@ classifier:
   timeout_ms: 3000
   temperature: 0
   max_tokens: 300
-  price: {input_per_mtok: 0.28, output_per_mtok: 0.42}
+  price: {input_per_mtok: 0.30, output_per_mtok: 1.20}   # deepseek-flash peak price
+  request_extra: {thinking: {type: disabled}}   # merged into the chat/completions JSON body (null → nothing); DeepSeek thinks by default
 
 labeler:
-  model: null                      # null → heuristic
-  endpoint: null                   # null → reuse classifier endpoint/key
-  api_key_env: null
+  model: deepseek-flash            # null → heuristic only
+  endpoint: https://api.deepseek.com/v1   # null → reuse classifier endpoint
+  api_key_env: DEEPSEEK_API_KEY    # null → reuse classifier key env; dsh needs this key anyway
+  timeout_ms: 5000                 # null → classifier.timeout_ms
+  price: {input_per_mtok: 0.30, output_per_mtok: 1.20}   # null → classifier.price
+  request_extra: {thinking: {type: disabled}}             # same semantics as classifier.request_extra
   time_bucket_heuristic:
     lt15m:  {max_files: 1, max_chars: 400}
     15m_1h: {max_files: 3, max_chars: 1500}
@@ -234,7 +240,7 @@ targets:
   dsh:
     description: DeepSeek Harness (headless)
     command: [npx, "@deepseek-ai/dsh", --profile, headless, --json]
-    model: deepseek-v3.2
+    model: deepseek-flash
     api_key_env: DEEPSEEK_API_KEY
     cost_tier: low
     strengths: [mechanical, docs, test]
@@ -316,9 +322,10 @@ top-level because labels are experiment-wide. The effective `policy_version` is 
 schema_version: 1
 models:
   gpt-5.1-codex:   {input_per_mtok: 1.25, cached_input_per_mtok: 0.125, output_per_mtok: 10.0}
-  deepseek-v3.2:   {input_per_mtok: 0.28, cached_input_per_mtok: 0.028, output_per_mtok: 0.42}
+  deepseek-flash:  {input_per_mtok: 0.30, cached_input_per_mtok: 0.006, output_per_mtok: 1.20}   # peak price; off-peak is half
+  deepseek-v4-pro: {input_per_mtok: 1.32, cached_input_per_mtok: 0.044, output_per_mtok: 3.96}
 ```
-Prices are **placeholders the user must confirm** (listed in decisions-for-user.md).
+Prices were checked against third-party mirrors of the DeepSeek price list on 2026-11-09 (peak tier; DeepSeek bills half off-peak, which v1 does not model) and are still **for the user to confirm** (decisions-for-user.md D3, D21).
 `price_table_version` = first 12 hex of sha256 of the file.
 
 ## 6. Routing algorithm (`evener decide`)
@@ -416,7 +423,7 @@ All commands print one JSON object on stdout (or markdown for `report --format m
 |---|---|
 | `init [--force]` | `{home, policy_path, pricing_path, db_path, created: bool}` |
 | `policy validate|show|hash [--file]` | `{ok, errors[]}` / policy / `{policy_version}` |
-| `task create --description-file F [--files a,b] [--constraint c]* [--host H] [--host-session S] [--cwd DIR]` | `{task_id, analysis_label, pre_features, policy_version, arm}` |
+| `task create --description-file F [--files a,b] [--constraint c]* [--host H] [--host-session S] [--cwd DIR]` | `{task_id, analysis_label, labeler_model, pre_features, policy_version, arm, warnings}` |
 | `decide --task T` | `{task_id, round, target, decided_by, rule_id, rationale, candidates, arm, locked}` |
 | `dispatch --task T --prompt-file F [--cwd DIR] [--target X] [--timeout-s N]` | `{task_id, round, target, status, wall_ms, usage, cost_usd, output_path, target_session_id, exit_code}` |
 | `done --task T [--wall-ms N] [--cost-usd C] [--model M] [--status success|error] [--cwd DIR]` | `{task_id, round, target, status, wall_ms, cost_usd}` |

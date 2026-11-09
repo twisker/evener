@@ -1,9 +1,11 @@
 /**
  * Timestamp helpers shared by the dispatch adapters.
  *
- * Both streams currently emit a mix of ISO strings and epoch numbers. Only
- * timestamps that are actually present are used: the adapters never synthesise
- * a clock reading, so a stream without timestamps reports null timing.
+ * Both streams currently emit a mix of ISO strings and epoch numbers. Explicit
+ * timestamps are always preferred when the stream supplies them. When it does
+ * not, the adapters fall back to the arrival time observed by
+ * `runJsonlProcess`: arrival time measures what the dispatcher observed, which
+ * includes pipe latency; it is never written as a timestamp into `usage_raw`.
  */
 
 const TIMESTAMP_KEYS = [
@@ -107,6 +109,21 @@ export function elapsedMs(start: number | null, end: number | null): number | nu
   if (start === null || end === null) return null;
   const difference = end - start;
   return Number.isFinite(difference) ? Math.max(0, Math.round(difference)) : null;
+}
+
+/**
+ * Timing derived from line arrival: tool time is the measured sum, model time
+ * is the remaining wall time. Unlike {@link finaliseTiming} this does not cap
+ * tool time at wall time, because the spec defines `model_ms` as the clamped
+ * remainder of `wall_ms - tool_ms`.
+ */
+export function arrivalTiming(toolMs: number, wallMs: number | null): TimingTotals {
+  const tool = Math.max(0, Math.round(toolMs));
+  if (wallMs === null || !Number.isFinite(wallMs)) {
+    return { model_ms: null, tool_ms: tool };
+  }
+  const wall = Math.max(0, Math.round(wallMs));
+  return { model_ms: Math.max(0, wall - tool), tool_ms: tool };
 }
 
 export interface TimingTotals {

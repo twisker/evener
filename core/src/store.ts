@@ -30,6 +30,7 @@ import {
 import type {
   AcceptanceFinishedPayload,
   DispatchFinishedPayload,
+  DispatchStartedPayload,
   EventType,
   EvenerEvent,
   Label,
@@ -674,8 +675,10 @@ export function applyProjection(row: TaskRow | null, ev: EvenerEvent): TaskRow |
         total_cost_usd: row.total_cost_usd + classifierCost,
       };
     }
-    case "dispatch.started":
-      return { ...row, state: "dispatching" };
+    case "dispatch.started": {
+      const data: DispatchStartedPayload = ev.data;
+      return { ...row, current_target: data.target, state: "dispatching" };
+    }
     case "dispatch.finished": {
       const data: DispatchFinishedPayload = ev.data;
       return {

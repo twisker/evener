@@ -245,6 +245,29 @@ test("rejected round 1 then redispatch yields round 2 and first_pass 0", (t) => 
   assert.equal(store.nextRound(taskId), 3);
 });
 
+test("dispatch.started overrides the routed target and rebuild preserves it", (t) => {
+  const { store } = tempStore(t);
+  const taskId = uuid();
+
+  store.appendEvent(created(taskId));
+  store.appendEvent(routed(taskId, 1, "codex", 0.01));
+  store.appendEvent(started(taskId, 1, "dsh"));
+
+  const tasks = store.listTasks();
+  assert.equal(tasks.length, 1);
+  const task = tasks[0];
+  assert.ok(task !== undefined);
+  assert.equal(task.current_target, "dsh");
+  assert.equal(task.state, "dispatching");
+
+  assert.equal(store.rebuildTasks(), 1);
+  const rebuilt = store.listTasks();
+  assert.equal(rebuilt.length, 1);
+  const rebuiltTask = rebuilt[0];
+  assert.ok(rebuiltTask !== undefined);
+  assert.equal(rebuiltTask.current_target, "dsh");
+});
+
 test("rebuildTasks reproduces identical task rows from events", (t) => {
   const { store } = tempStore(t);
   const taskId = uuid();

@@ -252,6 +252,28 @@ test("taskSummaries reads the current round's model and running time", () => {
   assert.equal(done.last_event_type, "dispatch.finished");
 });
 
+test("taskSummaries keeps the dispatched target when route and dispatch disagree", () => {
+  const id = "task-retarget";
+  const summaries = taskSummaries(
+    [task({ task_id: id, current_target: "dsh" })],
+    new Map<string, EvenerEvent[]>([
+      [
+        id,
+        [
+          created(id, "2026-11-09T10:00:00.000Z"),
+          routed(id, 1, "2026-11-09T10:00:01.000Z", "codex"),
+          started(id, 1, "2026-11-09T10:00:02.000Z", "dsh", "deepseek-flash"),
+        ],
+      ],
+    ]),
+    new Date("2026-11-09T10:00:05.000Z"),
+  );
+  const summary = summaries[0];
+  assert.ok(summary !== undefined);
+  assert.equal(summary.current_target, "dsh");
+  assert.equal(summary.current_model, "deepseek-flash");
+});
+
 // ---------------------------------------------------------------------------
 // roundViews
 // ---------------------------------------------------------------------------

@@ -277,9 +277,27 @@ const CLASSIFIER_KEYS = [
   "temperature",
   "max_tokens",
   "price",
+  "request_extra",
 ] as const;
 const CLASSIFIER_PRICE_KEYS = ["input_per_mtok", "output_per_mtok"] as const;
-const LABELER_KEYS = ["model", "endpoint", "api_key_env", "time_bucket_heuristic", "prompt_extra"] as const;
+const LABELER_KEYS = [
+  "model",
+  "endpoint",
+  "api_key_env",
+  "timeout_ms",
+  "price",
+  "request_extra",
+  "time_bucket_heuristic",
+  "prompt_extra",
+] as const;
+/** Keys owned by the transport; request_extra may not override them. */
+const RESERVED_REQUEST_EXTRA_KEYS = [
+  "model",
+  "messages",
+  "temperature",
+  "max_tokens",
+  "response_format",
+] as const;
 const TIME_BUCKET_THRESHOLD_KEYS = ["max_files", "max_chars"] as const;
 const TAXONOMY_KEYS = ["labels"] as const;
 const TARGET_KEYS = [
@@ -516,6 +534,45 @@ function checkRejectReasonArray(
   return out;
 }
 
+function validatePrice(
+  value: unknown,
+  base: string,
+  errors: ValidationIssue[],
+  warnings: ValidationIssue[],
+  nullable: boolean,
+): void {
+  if (value === null && nullable) return;
+  const price = asObject(value, base, errors);
+  if (price === null) return;
+  warnUnknown(price, CLASSIFIER_PRICE_KEYS, base, warnings);
+  checkNumber(price["input_per_mtok"], pointer(base, "input_per_mtok"), errors, { min: 0 });
+  checkNumber(price["output_per_mtok"], pointer(base, "output_per_mtok"), errors, { min: 0 });
+}
+
+/**
+ * `request_extra` is merged into the chat-completions body. It must be a plain
+ * JSON object (arrays are rejected) and may not shadow transport-owned keys.
+ */
+function validateRequestExtra(
+  value: unknown,
+  base: string,
+  errors: ValidationIssue[],
+): void {
+  if (value === null) return;
+  if (!isPlainObject(value)) {
+    errors.push({ path: base, message: "must be a JSON object or null" });
+    return;
+  }
+  for (const key of RESERVED_REQUEST_EXTRA_KEYS) {
+    if (hasOwn(value, key)) {
+      errors.push({
+        path: pointer(base, key),
+        message: `"${key}" is managed by the transport and may not be overridden`,
+      });
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Deep merge: objects merge, arrays replace
 // ---------------------------------------------------------------------------
@@ -540,6 +597,34 @@ function deepMerge(base: unknown, override: unknown): unknown {
     return out;
   }
   return cloneValue(override);
+}
+
+/**
+ * New-in-F6 fields are not silently inherited from the bundled template: when
+ * a user file (including an arm file) omits one it becomes `null`, which then
+ * activates the documented fallback. `request_extra` also replaces rather than
+ * deep-merges with the template value so `{}` really means "send nothing extra".
+ */
+function applyNewFieldDefaults(input: Record<string, unknown>, merged: Record<string, unknown>): void {
+  const rawClassifier = isPlainObject(input["classifier"]) ? input["classifier"] : null;
+  const mergedClassifier = isPlainObject(merged["classifier"]) ? merged["classifier"] : null;
+  if (mergedClassifier !== null) {
+    mergedClassifier["request_extra"] =
+      rawClassifier !== null && hasOwn(rawClassifier, "request_extra") && rawClassifier["request_extra"] !== undefined
+        ? cloneValue(rawClassifier["request_extra"])
+        : null;
+  }
+
+  const rawLabeler = isPlainObject(input["labeler"]) ? input["labeler"] : null;
+  const mergedLabeler = isPlainObject(merged["labeler"]) ? merged["labeler"] : null;
+  if (mergedLabeler !== null) {
+    for (const key of ["timeout_ms", "price", "request_extra"] as const) {
+      mergedLabeler[key] =
+        rawLabeler !== null && hasOwn(rawLabeler, key) && rawLabeler[key] !== undefined
+          ? cloneValue(rawLabeler[key])
+          : null;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -569,6 +654,7 @@ function validateClassifier(obj: Record<string, unknown>, errors: ValidationIssu
     checkNumber(price["input_per_mtok"], pointer(pointer(base, "price"), "input_per_mtok"), errors, { min: 0 });
     checkNumber(price["output_per_mtok"], pointer(pointer(base, "price"), "output_per_mtok"), errors, { min: 0 });
   }
+  validateRequestExtra(obj["request_extra"], pointer(base, "request_extra"), errors);
 }
 
 /**
@@ -639,6 +725,14 @@ function validateLabeler(obj: Record<string, unknown>, errors: ValidationIssue[]
   checkString(obj["model"], pointer(base, "model"), errors, { nullable: true });
   checkString(obj["endpoint"], pointer(base, "endpoint"), errors, { nullable: true });
   checkString(obj["api_key_env"], pointer(base, "api_key_env"), errors, { nullable: true });
+  checkNumber(obj["timeout_ms"], pointer(base, "timeout_ms"), errors, {
+    nullable: true,
+    integer: true,
+    min: 0,
+    exclusiveMin: true,
+  });
+  validatePrice(obj["price"], pointer(base, "price"), errors, warnings, true);
+  validateRequestExtra(obj["request_extra"], pointer(base, "request_extra"), errors);
   validateTimeBucketHeuristic(
     obj["time_bucket_heuristic"],
     pointer(base, "time_bucket_heuristic"),
@@ -1017,6 +1111,7 @@ function validatePolicyInternal(
     return { ok: false, errors, warnings };
   }
 
+  applyNewFieldDefaults(input, merged);
   validatePolicySections(merged, errors, warnings);
 
   if (errors.length > 0) {

@@ -176,6 +176,10 @@ export interface TaskCreatedPayload {
   pre_features: PreFeatures;
   analysis_label: Label;
   labeler_model: string;
+  /** Null on the heuristic path; absent on events written before this field. */
+  labeler_cost_usd?: number | null;
+  /** Null on the heuristic path; absent on events written before this field. */
+  labeler_latency_ms?: number | null;
   constraints: string[];
 }
 
@@ -321,12 +325,20 @@ export interface ClassifierConfig {
   temperature: number;
   max_tokens: number;
   price: ClassifierPrice;
+  /** Extra JSON merged into the request body before the fixed fields. */
+  request_extra: Record<string, unknown> | null;
 }
 
 export interface LabelerConfig {
   model: string | null;
   endpoint: string | null;
   api_key_env: string | null;
+  /** Null reuses `classifier.timeout_ms`. */
+  timeout_ms: number | null;
+  /** Null reuses `classifier.price`. */
+  price: ClassifierPrice | null;
+  /** Null reuses `classifier.request_extra`. */
+  request_extra: Record<string, unknown> | null;
   /** Heuristic time estimates, walked in this order. */
   time_bucket_heuristic: TimeBucketHeuristic;
   /** Free text appended to the model labeler prompt. */

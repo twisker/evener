@@ -38,6 +38,17 @@ test("bundled templates validate with zero errors and zero warnings", () => {
   if (pricingResult.ok) {
     assert.equal(pricingResult.pricing.schema_version, 1);
     assert.ok(pricingResult.pricing.models["gpt-5.1-codex"] !== undefined);
+    assert.deepEqual(pricingResult.pricing.models["deepseek-flash"], {
+      input_per_mtok: 0.3,
+      cached_input_per_mtok: 0.006,
+      output_per_mtok: 1.2,
+    });
+    assert.deepEqual(pricingResult.pricing.models["deepseek-v4-pro"], {
+      input_per_mtok: 1.32,
+      cached_input_per_mtok: 0.044,
+      output_per_mtok: 3.96,
+    });
+    assert.equal(pricingResult.pricing.models["deepseek-v3.2"], undefined);
   }
 });
 
@@ -126,14 +137,97 @@ test("resolveHome prefers --home, then EVENER_HOME", (t) => {
   assert.equal(resolveHome({ env: { EVENER_HOME: fromEnv } }), fromEnv);
 });
 
-test("the bundled labeler exposes the time-bucket heuristic and prompt_extra defaults", () => {
+test("the bundled labeler is on by default with the DeepSeek price and thinking request extra", () => {
   const policy = defaultPolicy();
+  assert.equal(policy.labeler.model, "deepseek-flash");
+  assert.equal(policy.labeler.endpoint, "https://api.deepseek.com/v1");
+  assert.equal(policy.labeler.api_key_env, "DEEPSEEK_API_KEY");
+  assert.equal(policy.labeler.timeout_ms, 5000);
+  assert.deepEqual(policy.labeler.price, {
+    input_per_mtok: 0.3,
+    output_per_mtok: 1.2,
+  });
+  assert.deepEqual(policy.labeler.request_extra, { thinking: { type: "disabled" } });
+  assert.deepEqual(policy.classifier.request_extra, { thinking: { type: "disabled" } });
   assert.deepEqual(policy.labeler.time_bucket_heuristic, {
     lt15m: { max_files: 1, max_chars: 400 },
     "15m_1h": { max_files: 3, max_chars: 1500 },
     "1h_4h": { max_files: 8, max_chars: 5000 },
   });
   assert.equal(policy.labeler.prompt_extra, null);
+});
+
+test("request_extra must be an object and cannot shadow transport fields", () => {
+  const messages = structuredClone(defaultPolicy()) as unknown as {
+    classifier: { request_extra: unknown };
+  };
+  messages.classifier.request_extra = { messages: [] };
+  const messagesResult = validatePolicy(messages);
+  assert.equal(messagesResult.ok, false);
+  assert.ok(
+    messagesResult.errors.some((issue) => issue.path === "/classifier/request_extra/messages"),
+    JSON.stringify(messagesResult.errors),
+  );
+
+  const array = structuredClone(defaultPolicy()) as unknown as {
+    classifier: { request_extra: unknown };
+  };
+  array.classifier.request_extra = [];
+  assert.equal(validatePolicy(array).ok, false);
+
+  const nullExtra = structuredClone(defaultPolicy());
+  nullExtra.classifier.request_extra = null;
+  nullExtra.labeler.request_extra = null;
+  const accepted = validatePolicy(nullExtra);
+  assert.equal(accepted.ok, true, JSON.stringify(accepted.errors));
+  if (accepted.ok) {
+    assert.equal(accepted.policy.classifier.request_extra, null);
+    assert.equal(accepted.policy.labeler.request_extra, null);
+  }
+});
+
+test("a policy without the new labeler fields loads with nulls, not template values", () => {
+  const legacy = JSON.parse(JSON.stringify(defaultPolicy())) as Record<string, unknown>;
+  const classifier = legacy["classifier"] as Record<string, unknown>;
+  const labeler = legacy["labeler"] as Record<string, unknown>;
+  delete classifier["request_extra"];
+  delete labeler["timeout_ms"];
+  delete labeler["price"];
+  delete labeler["request_extra"];
+
+  const result = validatePolicy(legacy);
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+  if (!result.ok) return;
+  assert.equal(result.policy.classifier.request_extra, null);
+  assert.equal(result.policy.labeler.timeout_ms, null);
+  assert.equal(result.policy.labeler.price, null);
+  assert.equal(result.policy.labeler.request_extra, null);
+  assert.equal(result.policy.labeler.model, "deepseek-flash");
+});
+
+test("labeler timeout_ms must be a positive integer or null", () => {
+  const zero = structuredClone(defaultPolicy());
+  zero.labeler.timeout_ms = 0;
+  assert.equal(validatePolicy(zero).ok, false);
+
+  const fractional = structuredClone(defaultPolicy());
+  fractional.labeler.timeout_ms = 1.5;
+  assert.equal(validatePolicy(fractional).ok, false);
+});
+
+test("labeler price is validated like classifier price", () => {
+  const bad = structuredClone(defaultPolicy());
+  bad.labeler.price = { input_per_mtok: -1, output_per_mtok: 1 };
+  const result = validatePolicy(bad);
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.errors.some((issue) => issue.path === "/labeler/price/input_per_mtok"),
+    JSON.stringify(result.errors),
+  );
+
+  const nullPrice = structuredClone(defaultPolicy());
+  nullPrice.labeler.price = null;
+  assert.equal(validatePolicy(nullPrice).ok, true);
 });
 
 test("rule conditions combine with AND and reject a bad time_bucket at its JSON pointer", () => {

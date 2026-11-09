@@ -92,6 +92,12 @@ Set `classifier.model` (any OpenAI-compatible endpoint; key via `api_key_env`) t
 apply the policy; leave it `null` to route with rules and the fallback table only. Set
 `experiment.mode: interleave` and two arm files to A/B-compare policies.
 
+The analysis labeler (label, time bucket, has-repro, used only to stratify reports) calls
+`deepseek-flash` with `DEEPSEEK_API_KEY` by default, costing about $0.0001 per task; if the key
+is missing or the call fails it falls back to keyword heuristics and `task create` prints a
+warning. Set `labeler.model: null` for heuristics only. Prices in `pricing.yaml` are DeepSeek
+peak-tier list prices (off-peak is half; not modelled, see `design/decisions-for-user.md` D21).
+
 ## Repository layout
 
 ```

@@ -12,6 +12,7 @@ import { LABELS, TIME_BUCKET_HEURISTIC_KEYS } from "./types.js";
 import type {
   ArmPolicy,
   ClassifierConfig,
+  ClassifierPrice,
   Label,
   LabelerConfig,
   PreFeatures,
@@ -54,6 +55,8 @@ export interface ChatCompletionsOptions {
   timeoutMs: number;
   temperature: number;
   maxTokens: number;
+  /** Merged into the body before the fixed transport fields. */
+  requestExtra?: Record<string, unknown> | null;
   fetchImpl?: typeof fetch;
 }
 
@@ -295,6 +298,7 @@ export async function callChatCompletions(
           authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
+          ...(opts.requestExtra ?? {}),
           model: opts.model,
           messages: opts.messages,
           temperature: opts.temperature,
@@ -429,6 +433,7 @@ export async function classifyTarget(
       timeoutMs: arm.classifier.timeout_ms,
       temperature: arm.classifier.temperature,
       maxTokens: arm.classifier.max_tokens,
+      requestExtra: arm.classifier.request_extra,
       ...(fetchImpl === undefined ? {} : { fetchImpl }),
     });
 
@@ -475,7 +480,15 @@ export async function classifyTarget(
 function resolveLabelerTransport(
   labeler: LabelerConfig,
   classifier: ClassifierConfig | undefined,
-): { endpoint: string; apiKeyEnv: string; timeoutMs: number; temperature: number; maxTokens: number } {
+): {
+  endpoint: string;
+  apiKeyEnv: string;
+  timeoutMs: number;
+  temperature: number;
+  maxTokens: number;
+  price: ClassifierPrice | null;
+  requestExtra: Record<string, unknown> | null;
+} {
   return {
     endpoint:
       labeler.endpoint ??
@@ -485,35 +498,55 @@ function resolveLabelerTransport(
       labeler.api_key_env ??
       classifier?.api_key_env ??
       FALLBACK_CLASSIFIER_KEY_ENV,
-    timeoutMs: classifier?.timeout_ms ?? 3000,
+    timeoutMs: labeler.timeout_ms ?? classifier?.timeout_ms ?? 3000,
     temperature: classifier?.temperature ?? 0,
     maxTokens: classifier?.max_tokens ?? 300,
+    price: labeler.price ?? classifier?.price ?? null,
+    requestExtra: labeler.request_extra ?? classifier?.request_extra ?? null,
   };
 }
 
-/**
- * Label a task with the fixed taxonomy. The prompt never mentions the routing
- * policy. Any transport or validation failure yields an `unknown` label and a
- * null time bucket.
- *
- * `classifier` supplies the endpoint/key/timeout fallback when the labeler
- * config leaves them null (spec §5).
- */
+/** The fixed taxonomy labeler's model answer. */
 export interface LabelModelResult {
   label: Label;
   time_bucket: TimeBucket | null;
+  has_repro: boolean | null;
+  cost_usd: number | null;
+  latency_ms: number | null;
+  /** `"<ClassifierError code>: <message>"`, or null on success. */
+  error: string | null;
 }
+
+const LABELER_TIME_BUCKETS = [...TIME_BUCKET_HEURISTIC_KEYS, "gt4h"] as const;
 
 function parseTimeBucket(value: unknown): TimeBucket | null {
   if (
     typeof value === "string" &&
-    (TIME_BUCKET_HEURISTIC_KEYS as readonly string[]).includes(value)
+    (LABELER_TIME_BUCKETS as readonly string[]).includes(value)
   ) {
     return value as TimeBucket;
   }
   return null;
 }
 
+function labelerCost(usage: ChatUsage | null, price: ClassifierPrice | null): number | null {
+  if (usage === null || price === null) return null;
+  return (
+    (usage.prompt_tokens / 1_000_000) * price.input_per_mtok +
+    (usage.completion_tokens / 1_000_000) * price.output_per_mtok
+  );
+}
+
+/**
+ * Label a task with the fixed taxonomy. The prompt never mentions the routing
+ * policy. Transport or parse failures are returned with an `error` string and
+ * an `unknown` label so the caller can fall back to the heuristic with a
+ * warning.
+ *
+ * `classifier` supplies the endpoint/key/timeout/price/request_extra fallback
+ * when the labeler config leaves them null (spec §5). Temperature and
+ * max_tokens always come from the classifier.
+ */
 export async function labelWithModel(
   policyLabeler: LabelerConfig,
   taxonomy: Taxonomy,
@@ -523,10 +556,23 @@ export async function labelWithModel(
   classifier?: ClassifierConfig,
 ): Promise<LabelModelResult> {
   const model = policyLabeler.model;
-  if (model === null) return { label: "unknown", time_bucket: null };
+  if (model === null) {
+    return {
+      label: "unknown",
+      time_bucket: null,
+      has_repro: null,
+      cost_usd: null,
+      latency_ms: null,
+      error: null,
+    };
+  }
 
   const taxonomyLabels = taxonomy.labels.length > 0 ? taxonomy.labels : [...LABELS];
   const labels = taxonomyLabels.filter((label) => label !== "unknown");
+  const allowed = new Set<string>(taxonomyLabels);
+  // The spec keeps "unknown" available as a last resort regardless of taxonomy.
+  allowed.add("unknown");
+
   const transport = resolveLabelerTransport(policyLabeler, classifier);
   const bucketDescription =
     "lt15m (<15 min), 15m_1h (15 min-1 h), 1h_4h (1-4 h), gt4h (>4 h)";
@@ -534,12 +580,17 @@ export async function labelWithModel(
     policyLabeler.prompt_extra === null ? "" : `\n\n${policyLabeler.prompt_extra}`;
   const answer = `Classify this coding task into exactly one label from: ${labels.join(", ")}. ` +
     `Also estimate the human time needed to complete it as exactly one time bucket: ${bucketDescription}. ` +
-    'Answer {"label": "<label>", "time_bucket": "<bucket>"}.\n\nTask:\n' +
+    'Set "has_repro" to true only if the task text itself supplies a failing test, reproduction steps, or an error/stack trace; otherwise set it to false. ' +
+    'Answer {"label": "<label>", "time_bucket": "<bucket>", "has_repro": <true|false>}.\n\nTask:\n' +
     description +
     promptExtra;
 
+  const started = Date.now();
+  let response: ChatCompletionsResult | null = null;
+  let costUsd: number | null = null;
+
   try {
-    const response = await callChatCompletions({
+    response = await callChatCompletions({
       endpoint: transport.endpoint,
       apiKey: env[transport.apiKeyEnv] ?? "",
       model,
@@ -550,17 +601,41 @@ export async function labelWithModel(
       timeoutMs: transport.timeoutMs,
       temperature: transport.temperature,
       maxTokens: transport.maxTokens,
+      requestExtra: transport.requestExtra,
       ...(fetchImpl === undefined ? {} : { fetchImpl }),
     });
 
+    costUsd = labelerCost(response.usage, transport.price);
+
     const parsed = parseJsonObject(response.content);
-    const label = parsed["label"];
-    const timeBucket = parseTimeBucket(parsed["time_bucket"]);
-    if (typeof label === "string" && (LABELS as readonly string[]).includes(label)) {
-      return { label: label as Label, time_bucket: timeBucket };
+    const labelValue = parsed["label"];
+    if (typeof labelValue !== "string" || !allowed.has(labelValue)) {
+      throw new ClassifierError(
+        "parse",
+        `labeler answer label ${JSON.stringify(labelValue)} is not in the taxonomy`,
+      );
     }
-    return { label: "unknown", time_bucket: null };
-  } catch {
-    return { label: "unknown", time_bucket: null };
+
+    const hasReproValue = parsed["has_repro"];
+    return {
+      label: labelValue as Label,
+      time_bucket: parseTimeBucket(parsed["time_bucket"]),
+      has_repro: typeof hasReproValue === "boolean" ? hasReproValue : null,
+      cost_usd: costUsd,
+      latency_ms: response.latency_ms,
+      error: null,
+    };
+  } catch (err) {
+    const latency =
+      response?.latency_ms ?? Math.max(0, Math.round(Date.now() - started));
+    const code = err instanceof ClassifierError ? err.code : "parse";
+    return {
+      label: "unknown",
+      time_bucket: null,
+      has_repro: null,
+      cost_usd: costUsd,
+      latency_ms: latency,
+      error: `${code}: ${errorMessage(err)}`,
+    };
   }
 }

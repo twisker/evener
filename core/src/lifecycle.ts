@@ -270,6 +270,9 @@ export function computeTotals(
       case "route.decided":
         totalCost += event.data.classifier_cost_usd ?? 0;
         break;
+      case "task.created":
+        totalCost += event.data.labeler_cost_usd ?? 0;
+        break;
       default:
         break;
     }

@@ -78,9 +78,11 @@ Evener reads its configuration from `$EVENER_HOME` (default `~/.evener`):
 
 Create the directory and default files with `evener init`, then edit
 `policy.yaml`. API keys are read from the environment named in the policy and are
-never stored by Evener: `EVENER_CLASSIFIER_API_KEY` for the classifier, and
+never stored by Evener: `EVENER_CLASSIFIER_API_KEY` for the classifier,
+`DEEPSEEK_API_KEY` for the default analysis labeler (`labeler.api_key_env`), and
 `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` for target preflight checks by default
-(`targets.<name>.api_key_env`).
+(`targets.<name>.api_key_env`). Without the labeler key, labelling silently degrades to
+keyword heuristics (a warning is printed once per task).
 
 Privacy defaults keep task descriptions out of the store
 (`privacy.store_description_excerpt: false`); only a hash and derived features are

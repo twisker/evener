@@ -355,6 +355,19 @@ function validateTaskCreated(data: Record<string, unknown>, errors: string[]): v
   }
   checkEnum(data, "analysis_label", "/data/analysis_label", LABELS, errors);
   checkString(data, "labeler_model", "/data/labeler_model", errors);
+  // Absent on `task.created` events written before the F6 labeler cost fields.
+  if (data["labeler_cost_usd"] !== undefined) {
+    checkNumber(data, "labeler_cost_usd", "/data/labeler_cost_usd", errors, {
+      min: 0,
+      nullable: true,
+    });
+  }
+  if (data["labeler_latency_ms"] !== undefined) {
+    checkNumber(data, "labeler_latency_ms", "/data/labeler_latency_ms", errors, {
+      min: 0,
+      nullable: true,
+    });
+  }
   checkStringArray(data, "constraints", "/data/constraints", errors);
   // `arm` is not part of the frozen payload, but the projection accepts it when
   // present so a task can be created already assigned to an experiment arm.
@@ -606,7 +619,7 @@ export function applyProjection(row: TaskRow | null, ev: EvenerEvent): TaskRow |
       state: "created",
       outcome: null,
       first_pass: null,
-      total_cost_usd: 0,
+      total_cost_usd: data.labeler_cost_usd ?? 0,
       total_wall_ms: 0,
       rating: null,
       overridden: 0,

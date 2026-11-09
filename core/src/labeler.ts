@@ -48,6 +48,11 @@ export interface LabelTaskResult {
   label: Label;
   labeler_model: string;
   time_bucket: TimeBucket;
+  /** Model value when it is a boolean, otherwise null. */
+  has_repro: boolean | null;
+  labeler_cost_usd: number | null;
+  labeler_latency_ms: number | null;
+  warning: string | null;
 }
 
 function isLabel(value: string): value is Label {
@@ -57,8 +62,9 @@ function isLabel(value: string): value is Label {
 /**
  * Label a task and estimate its time bucket. With no model configured this is
  * the deterministic heuristic; with one configured the fixed-prompt model is
- * used and a failure falls back to the heuristic. An invalid model time bucket
- * alone falls back to the heuristic bucket. Labeling must never fail a task.
+ * used and a failure falls back to the heuristic with a warning. An invalid
+ * model time bucket alone falls back to the heuristic bucket. Labeling must
+ * never fail a task.
  *
  * `preFeatures` is used for the heuristic fallback; when omitted the bucket is
  * `"unknown"` (the caller normally passes the computed features).
@@ -77,7 +83,15 @@ export async function labelTask(
   const model = policy.labeler.model;
 
   if (model === null) {
-    return { label: heuristic, labeler_model: "heuristic", time_bucket: heuristicBucket };
+    return {
+      label: heuristic,
+      labeler_model: "heuristic",
+      time_bucket: heuristicBucket,
+      has_repro: null,
+      labeler_cost_usd: null,
+      labeler_latency_ms: null,
+      warning: null,
+    };
   }
 
   try {
@@ -89,18 +103,37 @@ export async function labelTask(
       io.fetchImpl,
       policy.classifier,
     );
-    // `labelWithModel` reports failures as `unknown`; keep the deterministic
-    // heuristic as the labeler's fallback in that case.
-    if (isLabel(result.label) && result.label !== "unknown") {
+    if (result.error === null && isLabel(result.label)) {
       return {
         label: result.label,
         labeler_model: model,
         time_bucket: result.time_bucket ?? heuristicBucket,
+        has_repro: result.has_repro,
+        labeler_cost_usd: result.cost_usd,
+        labeler_latency_ms: result.latency_ms,
+        warning: null,
       };
     }
-  } catch {
+    return {
+      label: heuristic,
+      labeler_model: "heuristic",
+      time_bucket: heuristicBucket,
+      has_repro: null,
+      labeler_cost_usd: result.cost_usd,
+      labeler_latency_ms: result.latency_ms,
+      warning: `labeler: ${result.error ?? "parse: invalid label"}; fell back to heuristic`,
+    };
+  } catch (err) {
     // Fall through to the heuristic; labeling must never fail a task.
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      label: heuristic,
+      labeler_model: "heuristic",
+      time_bucket: heuristicBucket,
+      has_repro: null,
+      labeler_cost_usd: null,
+      labeler_latency_ms: null,
+      warning: `labeler: parse: ${message}; fell back to heuristic`,
+    };
   }
-
-  return { label: heuristic, labeler_model: "heuristic", time_bucket: heuristicBucket };
 }

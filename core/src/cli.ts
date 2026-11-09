@@ -188,6 +188,7 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
     store: getStore,
     io,
     format,
+    quiet: globals.options.quiet,
   };
 
   if (globals.error !== undefined) {

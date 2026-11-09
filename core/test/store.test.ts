@@ -324,6 +324,46 @@ test("new task.created stratification fields project and survive rebuild", (t) =
   assert.deepEqual(store.getTask(taskId), task);
 });
 
+test("old task.created payloads without labeler cost fields still validate", (t) => {
+  const { store } = tempStore(t);
+  const taskId = uuid();
+
+  store.appendEvent(created(taskId));
+
+  const task = store.getTask(taskId);
+  assert.ok(task !== null);
+  assert.equal(task.total_cost_usd, 0);
+  assert.equal(store.getEvents(taskId).length, 1);
+});
+
+test("labeler cost is added to the task total and survives rebuildTasks", (t) => {
+  const { store } = tempStore(t);
+  const taskId = uuid();
+
+  const legacy = created(taskId);
+  const data = {
+    ...legacy.data,
+    labeler_cost_usd: 0.0001,
+    labeler_latency_ms: 12,
+  };
+  store.appendEvent({ ...legacy, data } as unknown as EvenerEvent);
+  store.appendEvent(routed(taskId, 1, "codex", 0.01));
+  store.appendEvent(finished(taskId, 1, 0.02, 10));
+
+  const task = store.getTask(taskId);
+  assert.ok(task !== null);
+  assert.ok(
+    Math.abs(task.total_cost_usd - 0.0301) < 1e-12,
+    `cost was ${task.total_cost_usd}`,
+  );
+
+  assert.equal(store.rebuildTasks(), 1);
+  const rebuilt = store.getTask(taskId);
+  assert.ok(rebuilt !== null);
+  assert.ok(Math.abs(rebuilt.total_cost_usd - 0.0301) < 1e-12);
+  assert.deepEqual(rebuilt, task);
+});
+
 test("an old-style task.created without the new fields still projects defaults", (t) => {
   const { store } = tempStore(t);
   const taskId = uuid();

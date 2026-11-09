@@ -286,6 +286,9 @@ function analyseTask(task: TaskRow, events: readonly EvenerEvent[], windowStart:
 
     switch (event.type) {
       case "task.created":
+        // The fixed-taxonomy labeler is Evener overhead, like the classifier.
+        roundFor(rounds, event.round).classifierCostUsd +=
+          event.data.labeler_cost_usd ?? 0;
         break;
       case "route.decided": {
         const data: RouteDecidedPayload = event.data;

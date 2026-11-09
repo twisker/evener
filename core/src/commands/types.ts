@@ -31,6 +31,8 @@ export interface CommandContext {
   io: CliIO;
   /** Global `--format` value (commands that emit raw text use this). */
   format?: "json" | "md" | "jsonl" | "otel";
+  /** Global `--quiet` / `-q` flag; suppresses warnings and result output. */
+  quiet?: boolean;
 }
 
 export type CommandHandler = (ctx: CommandContext, argv: string[]) => Promise<unknown>;

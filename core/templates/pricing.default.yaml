@@ -1,4 +1,5 @@
 schema_version: 1
 models:
   gpt-5.1-codex:   {input_per_mtok: 1.25, cached_input_per_mtok: 0.125, output_per_mtok: 10.0}
-  deepseek-v3.2:   {input_per_mtok: 0.28, cached_input_per_mtok: 0.028, output_per_mtok: 0.42}
+  deepseek-flash:  {input_per_mtok: 0.30, cached_input_per_mtok: 0.006, output_per_mtok: 1.20}   # peak price; off-peak is half
+  deepseek-v4-pro: {input_per_mtok: 1.32, cached_input_per_mtok: 0.044, output_per_mtok: 3.96}

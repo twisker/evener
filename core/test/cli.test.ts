@@ -88,6 +88,33 @@ test("policy validate succeeds against an initialised home", async (t) => {
   assert.deepEqual(payload.warnings, []);
 });
 
+test("policy show reflects the new labeler defaults from the template", async (t) => {
+  const home = tempDir(t);
+  assert.equal(await runCli(["init", "--home", home], harness().io), 0);
+
+  const result = harness();
+  assert.equal(await runCli(["policy", "show", "--home", home], result.io), 0);
+  const policy = JSON.parse(result.stdout()) as {
+    labeler: {
+      model: string;
+      timeout_ms: number;
+      price: { input_per_mtok: number; output_per_mtok: number };
+      request_extra: unknown;
+    };
+    classifier: { request_extra: unknown };
+    targets: Record<string, { model: string | null }>;
+  };
+  assert.equal(policy.labeler.model, "deepseek-flash");
+  assert.equal(policy.labeler.timeout_ms, 5000);
+  assert.deepEqual(policy.labeler.price, {
+    input_per_mtok: 0.3,
+    output_per_mtok: 1.2,
+  });
+  assert.deepEqual(policy.labeler.request_extra, { thinking: { type: "disabled" } });
+  assert.deepEqual(policy.classifier.request_extra, { thinking: { type: "disabled" } });
+  assert.equal(policy.targets["dsh"]?.model, "deepseek-flash");
+});
+
 test("policy validate exits 2 and reports the bad path", async (t) => {
   const home = tempDir(t);
   assert.equal(await runCli(["init", "--home", home], harness().io), 0);

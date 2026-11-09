@@ -27,6 +27,16 @@ node core/dist/src/cli.js policy hash
 
 Global flags: `--home DIR`, `--format json|md`, `--quiet`.
 
+## Labeler
+
+The analysis labeler assigns each task a fixed-taxonomy label, a time bucket and a
+`has_repro` flag; it only stratifies reports and never influences routing. By default it
+calls `deepseek-flash` at `https://api.deepseek.com/v1` with thinking disabled, using
+`DEEPSEEK_API_KEY` (the same key dsh needs). A call costs roughly $0.0001 per task at the
+default DeepSeek flash peak price; when the key is missing or the call fails, `task create`
+falls back to the keyword heuristic and prints a warning on stderr. Set
+`labeler.model: null` in `policy.yaml` to disable the model and use heuristics only.
+
 ## Commands implemented so far
 
 | Command | Description |

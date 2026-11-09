@@ -116,6 +116,31 @@ function addConstraint(constraints: string[], constraint: string): void {
   if (!constraints.includes(constraint)) constraints.push(constraint);
 }
 
+/**
+ * Tests and embedders may put a `fetchImpl` on the CLI IO object, mirroring the
+ * optional `fetchImpl` that `decide`/`classifyTarget` accept. The real CLI
+ * leaves it unset and the transport uses the global `fetch`.
+ */
+function injectedFetch(ctx: CommandContext): typeof fetch | undefined {
+  const value = (ctx.io as { fetchImpl?: unknown }).fetchImpl;
+  return typeof value === "function" ? (value as typeof fetch) : undefined;
+}
+
+/** `--quiet` is a global flag forwarded to every command through the context. */
+function quietRequested(ctx: CommandContext): boolean {
+  return ctx.quiet === true;
+}
+
+function writeWarning(ctx: CommandContext, warning: string): void {
+  const text = `warning: ${warning}\n`;
+  const sink = ctx.io.stderr;
+  if (typeof sink === "function") {
+    sink(text);
+  } else {
+    sink.write(text);
+  }
+}
+
 interface CreateOptions {
   description: string;
   files: string[];
@@ -131,9 +156,11 @@ async function createTask(
 ): Promise<{
   task_id: string;
   analysis_label: string;
+  labeler_model: string;
   pre_features: PreFeatures;
   policy_version: string;
   arm: string | null;
+  warnings: string[];
 }> {
   const topPolicy = loadTopPolicy(ctx);
   const taskId = uuid();
@@ -143,9 +170,17 @@ async function createTask(
     options.cwd,
     topPolicy.labeler.time_bucket_heuristic,
   );
-  const labelled = await labelTask(options.description, topPolicy, { env: ctx.io.env }, preFeatures);
+  const labelled = await labelTask(
+    options.description,
+    topPolicy,
+    { env: ctx.io.env, fetchImpl: injectedFetch(ctx) },
+    preFeatures,
+  );
   // The model may revise the heuristic estimate; both paths need the same field.
   preFeatures.time_bucket = labelled.time_bucket;
+  if (typeof labelled.has_repro === "boolean") {
+    preFeatures.has_repro = labelled.has_repro;
+  }
   const arm = assignArm(topPolicy, taskId, labelled.label);
 
   const effective =
@@ -184,6 +219,8 @@ async function createTask(
     pre_features: preFeatures,
     analysis_label: labelled.label,
     labeler_model: labelled.labeler_model,
+    labeler_cost_usd: labelled.labeler_cost_usd,
+    labeler_latency_ms: labelled.labeler_latency_ms,
     constraints,
     arm,
   };
@@ -205,9 +242,11 @@ async function createTask(
   return {
     task_id: taskId,
     analysis_label: labelled.label,
+    labeler_model: labelled.labeler_model,
     pre_features: preFeatures,
     policy_version: effective.policy_version,
     arm,
+    warnings: labelled.warning === null ? [] : [labelled.warning],
   };
 }
 
@@ -251,7 +290,18 @@ async function cmdTaskCreate(ctx: CommandContext, argv: string[]): Promise<unkno
   const host = stringOption(values["host"]) ?? "claude-code";
   const hostSession = stringOption(values["host-session"]) ?? null;
 
-  return createTask(ctx, { description, files, constraints, host, hostSession, cwd });
+  const result = await createTask(ctx, {
+    description,
+    files,
+    constraints,
+    host,
+    hostSession,
+    cwd,
+  });
+  if (result.warnings.length > 0 && !quietRequested(ctx)) {
+    for (const warning of result.warnings) writeWarning(ctx, warning);
+  }
+  return result;
 }
 
 async function cmdTask(ctx: CommandContext, argv: string[]): Promise<unknown> {

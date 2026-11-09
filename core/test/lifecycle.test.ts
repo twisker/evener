@@ -98,7 +98,14 @@ function makeEvent<K extends EventType>(
 
 function newTask(
   store: Store,
-  opts: { session?: string | null; label?: Label; taskId?: string; ts?: string } = {},
+  opts: {
+    session?: string | null;
+    label?: Label;
+    taskId?: string;
+    ts?: string;
+    labelerCost?: number | null;
+    labelerLatency?: number | null;
+  } = {},
 ): TaskRow {
   const taskId = opts.taskId ?? uuid();
   const event = {
@@ -126,6 +133,8 @@ function newTask(
       },
       analysis_label: opts.label ?? "bugfix",
       labeler_model: "heuristic",
+      labeler_cost_usd: opts.labelerCost ?? null,
+      labeler_latency_ms: opts.labelerLatency ?? null,
       constraints: [],
     },
   } as unknown as EvenerEvent;
@@ -638,6 +647,35 @@ test("next appends redispatch events, updates the task, and dry-run only prints"
 // ---------------------------------------------------------------------------
 // close
 // ---------------------------------------------------------------------------
+
+test("close and the budget check include the labeler cost", (t) => {
+  const { store } = tempStore(t);
+  const policy = defaultPolicy();
+  const task = newTask(store, { labelerCost: 0.0001, labelerLatency: 12 });
+
+  route(store, task, "dsh", 1, { classifierCost: 0.01 });
+  dispatchFinished(store, mustTask(store, task.task_id), 1, { cost: 0.1, wall: 10 });
+  acceptance(store, mustTask(store, task.task_id), 1, "accepted", null, {
+    reviewerCost: 0.02,
+    reviewerWall: 5,
+  });
+
+  const totals = computeTotals(store.getEvents(task.task_id));
+  assert.ok(Math.abs(totals.total_cost_usd - 0.1301) < 1e-12);
+
+  const result = close(store, policy, mustTask(store, task.task_id), NOW, "accepted");
+  assert.ok(Math.abs(result.output.total_cost_usd - 0.1301) < 1e-12);
+  store.appendEvent(result.events[0] as EvenerEvent);
+  assert.ok(Math.abs(mustTask(store, task.task_id).total_cost_usd - 0.1301) < 1e-12);
+
+  const budgetTask = newTask(store, { labelerCost: 2 });
+  route(store, budgetTask, "dsh", 1, { classifierCost: 0 });
+  dispatchFinished(store, mustTask(store, budgetTask.task_id), 1, { cost: 0.1 });
+  acceptance(store, mustTask(store, budgetTask.task_id), 1, "rejected", "tests_failed");
+  const next = decideNext(store, policy, mustTask(store, budgetTask.task_id), NOW);
+  assert.equal(next.action, "hand_to_human");
+  assert.match(next.why ?? "", /max_cost_per_task_usd/);
+});
 
 test("close totals are the sum of dispatch, reviewer and classifier costs", (t) => {
   const { store } = tempStore(t);

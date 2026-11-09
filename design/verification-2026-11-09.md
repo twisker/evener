@@ -4,7 +4,7 @@ All runs on the maintainer's machine (macOS, Node 26, codex-cli 0.166.0, @deepse
 
 | Check | Result |
 |---|---|
-| `npm test` (core + adapter self-test) | 144 tests pass, `claude plugin validate` passes |
+| `npm test` (core + adapter self-test) | 159 tests pass, `claude plugin validate` passes |
 | dsh dispatch, real CLI | task "create hello.txt" → `success`, 8.7 s, $0.00075, usage parsed from `step_end` |
 | codex dispatch, real CLI | task "create bye.txt" → `success`, 15.4 s, $0.0191 (placeholder prices), thread id captured |
 | rejection → `next` | `style` → retry same target; round advanced to 2; `sweep` closed it as abandoned |
@@ -12,6 +12,7 @@ All runs on the maintainer's machine (macOS, Node 26, codex-cli 0.166.0, @deepse
 | report | Markdown renders all six sections; `insufficient` shown for n < 8; style-suspicion alert fired; `export --format jsonl` emits every event |
 | stratification features (F4/F5) | `--files src/a.ts,src/b.ts` + description naming them → `files_mentioned 2`, `language ts`, `cross_file true`; "No reproduction yet, stack trace unavailable" → `has_repro false`; `time_bucket 15m_1h`; old v1 DB upgraded to schema 2 in place; `report --by time_bucket` renders |
 | skill in a real Claude Code session | `claude -p --plugin-dir adapters/claude-code` with the `/evener:evener` skill: SessionStart hook supplied the session id (`host_session_id` matched), label `mechanical` → `dsh`, dispatch succeeded, acceptance recorded with `scope=pass` and tests/lint/build `skipped`, task closed `accepted`. Nested session cost $0.76 of host tokens for a $0.0008 delegated task (22 turns). |
+| model labeler (F6) | Real `deepseek-flash` calls with thinking disabled: "Fix crash in src/a.ts and src/b.ts … No reproduction yet" → `bugfix`, `1h_4h`, `has_repro false`, $0.000095, ~1 s; "Add a unit test … stack trace attached" → `test`, `15m_1h`, `has_repro true`; `labeler_cost_usd` lands in `tasks.total_cost_usd`. Without `DEEPSEEK_API_KEY`: heuristic label, `warnings[0]` = `labeler: no_key…`, stderr warning, silent under `--quiet`. DeepSeek model list and price tier verified the same day (see CLAUDE.md, D3/D5/D21). |
 
 ## Observations for the maintainer
 

@@ -24,11 +24,11 @@ test("priceUsage prices normalised codex usage with the default table", () => {
 test("priceUsage prices normalised dsh usage with the default table", () => {
   const priced = priceUsage(
     { input: 1399, cached_input: 5248, output: 52, reasoning: 0 },
-    "deepseek-v3.2",
+    "deepseek-flash",
     defaultPricing(),
   );
-  // 1399 * 0.28 + 5248 * 0.028 + 52 * 0.42, per million tokens.
-  close(priced.cost_usd, 0.000560504);
+  // 1399 * 0.30 + 5248 * 0.006 + 52 * 1.20, per million tokens.
+  close(priced.cost_usd, 0.000513588);
   assert.equal(priced.cost_unknown, false);
 });
 
@@ -55,7 +55,7 @@ test("priceUsage returns zero and cost_unknown for an unpriced model", () => {
 test("priceUsage returns a known zero for empty usage", () => {
   const priced = priceUsage(
     { input: 0, cached_input: 0, output: 0, reasoning: 0 },
-    "deepseek-v3.2",
+    "deepseek-flash",
     defaultPricing(),
   );
   assert.equal(priced.cost_usd, 0);

@@ -150,6 +150,7 @@ test("callChatCompletions posts to /chat/completions with JSON response format",
     timeoutMs: 1000,
     temperature: 0,
     maxTokens: 50,
+    requestExtra: { thinking: { type: "disabled" }, model: "ignored", temperature: 9 },
     fetchImpl,
   });
 
@@ -158,6 +159,7 @@ test("callChatCompletions posts to /chat/completions with JSON response format",
   assert.equal(seenBody["model"], "classifier-1");
   assert.equal(seenBody["max_tokens"], 50);
   assert.equal(seenBody["temperature"], 0);
+  assert.deepEqual(seenBody["thinking"], { type: "disabled" });
   assert.deepEqual(seenBody["response_format"], { type: "json_object" });
   assert.equal(result.content, '{"target":"codex"}');
   assert.deepEqual(result.usage, { prompt_tokens: 100, completion_tokens: 20 });
@@ -225,7 +227,7 @@ test("classifyTarget parses a fenced JSON answer and computes cost", async () =>
   assert.deepEqual(result.scores, { dsh: 0.9, codex: 0.2 });
   assert.equal(result.rationale, "cheap");
   assert.equal(result.model, "classifier-1");
-  assert.ok(Math.abs(result.cost_usd - 0.49) < 1e-9);
+  assert.ok(Math.abs(result.cost_usd - 0.9) < 1e-9);
 });
 
 test("classifyTarget rejects a disabled target with invalid_target", async () => {
@@ -288,7 +290,15 @@ test("classifyTarget leaves cost at zero when usage is absent", async () => {
 test("labelWithModel uses the fixed prompt and falls back to the classifier endpoint/key", async () => {
   const policy = arm();
   policy.classifier.endpoint = "https://classifier.test/v1";
-  policy.labeler = { ...policy.labeler, model: "labeler-1" };
+  policy.labeler = {
+    ...policy.labeler,
+    model: "labeler-1",
+    endpoint: null,
+    api_key_env: null,
+    timeout_ms: null,
+    price: null,
+    request_extra: null,
+  };
 
   let seenUrl = "";
   let seenUser = "";
@@ -297,7 +307,7 @@ test("labelWithModel uses the fixed prompt and falls back to the classifier endp
     const raw = typeof init?.body === "string" ? init.body : "";
     const body = JSON.parse(raw) as { messages?: { role: string; content: string }[] };
     seenUser = body.messages?.find((message) => message.role === "user")?.content ?? "";
-    return chatResponse('{"label":"docs","time_bucket":"15m_1h"}');
+    return chatResponse('{"label":"docs","time_bucket":"15m_1h","has_repro":false}');
   });
 
   const result = await labelWithModel(
@@ -309,15 +319,21 @@ test("labelWithModel uses the fixed prompt and falls back to the classifier endp
     policy.classifier,
   );
 
-  assert.deepEqual(result, { label: "docs", time_bucket: "15m_1h" });
+  assert.equal(result.label, "docs");
+  assert.equal(result.time_bucket, "15m_1h");
+  assert.equal(result.has_repro, false);
+  assert.equal(result.error, null);
+  assert.ok(Math.abs((result.cost_usd ?? -1) - 0.000009) < 1e-12);
+  assert.ok((result.latency_ms ?? -1) >= 0);
   assert.equal(seenUrl, "https://classifier.test/v1/chat/completions");
   assert.match(seenUser, /Classify this coding task into exactly one label from: bugfix/);
-  assert.match(seenUser, /Answer \{"label": "<label>", "time_bucket": "<bucket>"\}/);
+  assert.match(seenUser, /"has_repro"/);
+  assert.match(seenUser, /Answer \{"label": "<label>", "time_bucket": "<bucket>", "has_repro": <true\|false>\}/);
   assert.match(seenUser, /25 min|15 min/);
   assert.match(seenUser, /Update the README/);
 });
 
-test("labelWithModel returns unknown on HTTP failure", async () => {
+test("labelWithModel reports an http error instead of swallowing it", async () => {
   const policy = arm();
   policy.labeler = { ...policy.labeler, model: "labeler-1" };
 
@@ -325,12 +341,33 @@ test("labelWithModel returns unknown on HTTP failure", async () => {
     policy.labeler,
     policy.taxonomy,
     "Update the README",
-    { CLASSIFIER_KEY: "secret" },
+    { DEEPSEEK_API_KEY: "secret" },
     stubFetch(() => new Response("down", { status: 500 })),
     policy.classifier,
   );
 
-  assert.deepEqual(result, { label: "unknown", time_bucket: null });
+  assert.equal(result.label, "unknown");
+  assert.equal(result.time_bucket, null);
+  assert.equal(result.has_repro, null);
+  assert.equal(result.cost_usd, null);
+  assert.match(result.error ?? "", /^http: /);
+});
+
+test("labelWithModel rejects a label outside the taxonomy as a parse error", async () => {
+  const policy = arm();
+  policy.labeler = { ...policy.labeler, model: "labeler-1" };
+
+  const result = await labelWithModel(
+    policy.labeler,
+    policy.taxonomy,
+    "Update the README",
+    { DEEPSEEK_API_KEY: "secret" },
+    stubFetch(() => chatResponse('{"label":"not-a-label","time_bucket":"lt15m"}')),
+    policy.classifier,
+  );
+
+  assert.equal(result.label, "unknown");
+  assert.match(result.error ?? "", /^parse: /);
 });
 
 test("labelTask uses the model label when configured and the heuristic otherwise", async () => {
@@ -342,16 +379,20 @@ test("labelTask uses the model label when configured and the heuristic otherwise
     "Fix the crash on startup",
     policy,
     {
-      env: { CLASSIFIER_KEY: "secret" },
-      fetchImpl: stubFetch(() => chatResponse('{"label":"refactor","time_bucket":"1h_4h"}')),
+      env: { DEEPSEEK_API_KEY: "secret" },
+      fetchImpl: stubFetch(() =>
+        chatResponse('{"label":"refactor","time_bucket":"1h_4h","has_repro":true}'),
+      ),
     },
     preFeatures,
   );
-  assert.deepEqual(labelled, {
-    label: "refactor",
-    labeler_model: "labeler-1",
-    time_bucket: "1h_4h",
-  });
+  assert.equal(labelled.label, "refactor");
+  assert.equal(labelled.labeler_model, "labeler-1");
+  assert.equal(labelled.time_bucket, "1h_4h");
+  assert.equal(labelled.has_repro, true);
+  assert.equal(labelled.warning, null);
+  assert.ok((labelled.labeler_cost_usd ?? -1) > 0);
+  assert.ok((labelled.labeler_latency_ms ?? -1) >= 0);
 
   const heuristicPolicy = arm();
   heuristicPolicy.labeler = { ...heuristicPolicy.labeler, model: null };
@@ -360,10 +401,14 @@ test("labelTask uses the model label when configured and the heuristic otherwise
     label: "bugfix",
     labeler_model: "heuristic",
     time_bucket: "lt15m",
+    has_repro: null,
+    labeler_cost_usd: null,
+    labeler_latency_ms: null,
+    warning: null,
   });
 });
 
-test("labelTask keeps the heuristic when the model cannot label", async () => {
+test("labelTask keeps the heuristic and warns when the model cannot label", async () => {
   const policy = arm();
   policy.labeler = { ...policy.labeler, model: "labeler-1" };
 
@@ -371,14 +416,14 @@ test("labelTask keeps the heuristic when the model cannot label", async () => {
     "Fix the crash on startup",
     policy,
     {
-      env: { CLASSIFIER_KEY: "secret" },
+      env: { DEEPSEEK_API_KEY: "secret" },
       fetchImpl: stubFetch(() => new Response("down", { status: 500 })),
     },
     { description_chars: 20, files_mentioned: 1 },
   );
-  assert.deepEqual(labelled, {
-    label: "bugfix",
-    labeler_model: "heuristic",
-    time_bucket: "lt15m",
-  });
+  assert.equal(labelled.label, "bugfix");
+  assert.equal(labelled.labeler_model, "heuristic");
+  assert.equal(labelled.time_bucket, "lt15m");
+  assert.equal(labelled.has_repro, null);
+  assert.match(labelled.warning ?? "", /^labeler: http: .*; fell back to heuristic$/);
 });

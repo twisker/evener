@@ -8,7 +8,7 @@ classifier:
   timeout_ms: 3000
   temperature: 0
   max_tokens: 300
-  price: {input_per_mtok: 0.30, output_per_mtok: 1.20}   # deepseek-flash peak price
+  price: {input_per_mtok: 0.15, output_per_mtok: 0.60, peak: deepseek}   # deepseek-flash off-peak (list) price; the deepseek schedule doubles it in peak windows
   request_extra: {thinking: {type: disabled}}   # merged into the chat/completions JSON body (null → nothing); DeepSeek thinks by default
 
 labeler:
@@ -16,7 +16,7 @@ labeler:
   endpoint: https://api.deepseek.com/v1   # null → reuse classifier endpoint
   api_key_env: DEEPSEEK_API_KEY    # null → reuse classifier key env; dsh needs this key anyway
   timeout_ms: 5000                 # null → classifier.timeout_ms
-  price: {input_per_mtok: 0.30, output_per_mtok: 1.20}   # null → classifier.price
+  price: {input_per_mtok: 0.15, output_per_mtok: 0.60, peak: deepseek}   # null → classifier.price
   request_extra: {thinking: {type: disabled}}             # same semantics as classifier.request_extra
   time_bucket_heuristic:
     lt15m:  {max_files: 1, max_chars: 400}

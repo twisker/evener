@@ -153,6 +153,9 @@ async function cmdAccept(ctx: CommandContext, argv: string[]): Promise<unknown> 
       review: { type: "string" },
       "reviewer-cost-usd": { type: "string" },
       "reviewer-wall-ms": { type: "string" },
+      "reviewer-input-tokens": { type: "string" },
+      "reviewer-cached-tokens": { type: "string" },
+      "reviewer-output-tokens": { type: "string" },
     },
     allowPositionals: false,
     strict: true,
@@ -180,6 +183,27 @@ async function cmdAccept(ctx: CommandContext, argv: string[]): Promise<unknown> 
     "reviewer-wall-ms",
     true,
   );
+  const reviewerInputTokens = numberOption(
+    stringOption(values["reviewer-input-tokens"]),
+    "reviewer-input-tokens",
+    true,
+  );
+  const reviewerCachedTokens = numberOption(
+    stringOption(values["reviewer-cached-tokens"]),
+    "reviewer-cached-tokens",
+    true,
+  );
+  const reviewerOutputTokens = numberOption(
+    stringOption(values["reviewer-output-tokens"]),
+    "reviewer-output-tokens",
+    true,
+  );
+  const reviewerUsage = {
+    ...(reviewerInputTokens === undefined ? {} : { input: reviewerInputTokens }),
+    ...(reviewerCachedTokens === undefined ? {} : { cached_input: reviewerCachedTokens }),
+    ...(reviewerOutputTokens === undefined ? {} : { output: reviewerOutputTokens }),
+  };
+  const hasReviewerUsage = Object.keys(reviewerUsage).length > 0;
 
   const store = ctx.store();
   const task = loadTask(ctx, taskId);
@@ -192,6 +216,7 @@ async function cmdAccept(ctx: CommandContext, argv: string[]): Promise<unknown> 
       ...(review === undefined ? {} : { review }),
       ...(reviewerCostUsd === undefined ? {} : { reviewerCostUsd }),
       ...(reviewerWallMs === undefined ? {} : { reviewerWallMs }),
+      ...(hasReviewerUsage ? { reviewerUsage } : {}),
     }),
   );
   appendEvents(store, result.events);

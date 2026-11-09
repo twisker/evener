@@ -16,9 +16,12 @@ import type {
   Label,
   LabelerConfig,
   PreFeatures,
+  Pricing,
+  PricingPeriod,
   Taxonomy,
   TimeBucket,
 } from "./types.js";
+import { peakSchedule, pricingPeriod } from "./pricing.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -83,6 +86,26 @@ export type ClassifierFailureCode =
   | ClassifierErrorCode
   | "invalid_target"
   | "no_model";
+
+/**
+ * Cost multiplier for an inline classifier/labeler price at `at`.
+ *
+ * The policy carries only the schedule name; it is resolved against the
+ * pricing file's `peak_schedules`. With no pricing file in reach the tier is
+ * `flat` and the list price is charged unchanged.
+ */
+function inlinePriceFactor(
+  price: ClassifierPrice,
+  pricing: Pricing | undefined,
+  at: Date,
+): { factor: number; period: PricingPeriod } {
+  const schedule = peakSchedule(pricing, price.peak);
+  const period = pricingPeriod(schedule, at);
+  return {
+    factor: period === "peak" && schedule !== null ? schedule.factor : 1,
+    period,
+  };
+}
 
 export type ClassifierResult =
   | {
@@ -406,6 +429,8 @@ export async function classifyTarget(
   task: TaskFeatures,
   env: Readonly<Record<string, string | undefined>>,
   fetchImpl?: typeof fetch,
+  pricing?: Pricing,
+  at: Date = new Date(),
 ): Promise<ClassifierResult> {
   const started = Date.now();
   const model = arm.classifier.model;
@@ -449,11 +474,13 @@ export async function classifyTarget(
 
     const usage = response.usage;
     const price = arm.classifier.price;
+    const { factor } = inlinePriceFactor(price, pricing, at);
     const costUsd =
       usage === null
         ? 0
-        : (usage.prompt_tokens / 1_000_000) * price.input_per_mtok +
-          (usage.completion_tokens / 1_000_000) * price.output_per_mtok;
+        : ((usage.prompt_tokens / 1_000_000) * price.input_per_mtok +
+            (usage.completion_tokens / 1_000_000) * price.output_per_mtok) *
+          factor;
 
     return {
       ok: true,
@@ -529,11 +556,18 @@ function parseTimeBucket(value: unknown): TimeBucket | null {
   return null;
 }
 
-function labelerCost(usage: ChatUsage | null, price: ClassifierPrice | null): number | null {
+function labelerCost(
+  usage: ChatUsage | null,
+  price: ClassifierPrice | null,
+  pricing: Pricing | undefined,
+  at: Date,
+): number | null {
   if (usage === null || price === null) return null;
+  const { factor } = inlinePriceFactor(price, pricing, at);
   return (
-    (usage.prompt_tokens / 1_000_000) * price.input_per_mtok +
-    (usage.completion_tokens / 1_000_000) * price.output_per_mtok
+    ((usage.prompt_tokens / 1_000_000) * price.input_per_mtok +
+      (usage.completion_tokens / 1_000_000) * price.output_per_mtok) *
+    factor
   );
 }
 
@@ -554,6 +588,8 @@ export async function labelWithModel(
   env: Readonly<Record<string, string | undefined>>,
   fetchImpl?: typeof fetch,
   classifier?: ClassifierConfig,
+  pricing?: Pricing,
+  at: Date = new Date(),
 ): Promise<LabelModelResult> {
   const model = policyLabeler.model;
   if (model === null) {
@@ -605,7 +641,7 @@ export async function labelWithModel(
       ...(fetchImpl === undefined ? {} : { fetchImpl }),
     });
 
-    costUsd = labelerCost(response.usage, transport.price);
+    costUsd = labelerCost(response.usage, transport.price, pricing, at);
 
     const parsed = parseJsonObject(response.content);
     const labelValue = parsed["label"];

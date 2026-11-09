@@ -98,7 +98,7 @@ test("policy show reflects the new labeler defaults from the template", async (t
     labeler: {
       model: string;
       timeout_ms: number;
-      price: { input_per_mtok: number; output_per_mtok: number };
+      price: { input_per_mtok: number; output_per_mtok: number; peak?: string };
       request_extra: unknown;
     };
     classifier: { request_extra: unknown };
@@ -107,8 +107,9 @@ test("policy show reflects the new labeler defaults from the template", async (t
   assert.equal(policy.labeler.model, "deepseek-flash");
   assert.equal(policy.labeler.timeout_ms, 5000);
   assert.deepEqual(policy.labeler.price, {
-    input_per_mtok: 0.3,
-    output_per_mtok: 1.2,
+    input_per_mtok: 0.15,
+    output_per_mtok: 0.6,
+    peak: "deepseek",
   });
   assert.deepEqual(policy.labeler.request_extra, { thinking: { type: "disabled" } });
   assert.deepEqual(policy.classifier.request_extra, { thinking: { type: "disabled" } });

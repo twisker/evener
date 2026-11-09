@@ -1,0 +1,10 @@
+{"type":"session","sessionId":"session-dsh-2","cwd":"/tmp/evener-project","ts":"2026-11-09T00:00:00.000Z"}
+{"type":"status","phase":"turn_start","turn":1,"ts":"2026-11-09T00:00:00.000Z"}
+{"type":"status","phase":"step_start","turn":1,"step":1,"ts":"2026-11-09T00:00:00.200Z"}
+{"type":"status","phase":"step_end","turn":1,"step":1,"ts":"2026-11-09T00:00:02.200Z","usage":{"inputTokens":399,"outputTokens":2,"cacheReadTokens":5248,"cacheWriteTokens":0,"totalTokens":5647}}
+{"type":"tool_call","id":"tool-1","name":"read_file","input":{"path":"src/main.ts"},"ts":"2026-11-09T00:00:02.300Z"}
+{"type":"tool_result","id":"tool-1","name":"read_file","output":"contents","ts":"2026-11-09T00:00:03.300Z"}
+{"type":"status","phase":"step_start","turn":1,"step":2,"ts":"2026-11-09T00:00:03.400Z"}
+{"type":"status","phase":"step_end","turn":1,"step":2,"ts":"2026-11-09T00:00:04.400Z","usage":{"inputTokens":1000,"outputTokens":50,"cacheReadTokens":0,"cacheWriteTokens":0,"totalTokens":1050}}
+{"type":"status","phase":"turn_end","turn":1,"ts":"2026-11-09T00:00:04.500Z"}
+{"type":"final","sessionId":"session-dsh-2","reason":{"kind":"completed"},"text":"Done: updated src/main.ts.","ts":"2026-11-09T00:00:05.000Z"}

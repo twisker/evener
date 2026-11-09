@@ -19,6 +19,7 @@ import {
   LABELS,
   LANGUAGES,
   OUTCOMES,
+  PRICING_PERIODS,
   RATINGS,
   REDISPATCH_KINDS,
   REJECT_REASONS,
@@ -441,6 +442,24 @@ function validateDispatchFinished(data: Record<string, unknown>, errors: string[
   checkNumber(data, "exit_code", "/data/exit_code", errors, { integer: true, nullable: true });
   checkString(data, "target_session_id", "/data/target_session_id", errors, true);
   checkString(data, "output_path", "/data/output_path", errors, true);
+  // Absent on events written before the timing split and pricing tier.
+  if (data["model_ms"] !== undefined) {
+    checkNumber(data, "model_ms", "/data/model_ms", errors, {
+      integer: true,
+      min: 0,
+      nullable: true,
+    });
+  }
+  if (data["tool_ms"] !== undefined) {
+    checkNumber(data, "tool_ms", "/data/tool_ms", errors, {
+      integer: true,
+      min: 0,
+      nullable: true,
+    });
+  }
+  if (data["pricing_period"] !== undefined) {
+    checkEnum(data, "pricing_period", "/data/pricing_period", PRICING_PERIODS, errors);
+  }
 }
 
 function validateAcceptanceFinished(data: Record<string, unknown>, errors: string[]): void {
@@ -464,6 +483,21 @@ function validateAcceptanceFinished(data: Record<string, unknown>, errors: strin
     integer: true,
     min: 0,
   });
+  // Absent on events written before reviewer tokens / self-acceptance.
+  if (data["reviewer_usage"] !== undefined) {
+    const usage = checkObject(data, "reviewer_usage", "/data/reviewer_usage", errors, true);
+    if (usage !== null) {
+      for (const key of ["input", "cached_input", "output"]) {
+        checkNumber(usage, key, `/data/reviewer_usage/${key}`, errors, {
+          integer: true,
+          min: 0,
+        });
+      }
+    }
+  }
+  if (data["self_accepted"] !== undefined) {
+    checkBoolean(data, "self_accepted", "/data/self_accepted", errors);
+  }
 }
 
 function validateTaskRedispatch(data: Record<string, unknown>, errors: string[]): void {

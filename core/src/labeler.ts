@@ -10,7 +10,7 @@
 import { labelWithModel } from "./classifier.js";
 import { timeBucketHeuristic } from "./features.js";
 import { LABELS } from "./types.js";
-import type { Label, Policy, PreFeatures, TimeBucket } from "./types.js";
+import type { Label, Policy, PreFeatures, Pricing, TimeBucket } from "./types.js";
 
 const BUGFIX = /fix|bug|crash|error|regression|broken/;
 const MECHANICAL = /rename|move|migrate|format|lint|boilerplate|bulk|batch|replace all/;
@@ -42,6 +42,8 @@ export function labelHeuristic(description: string): Label {
 export interface LabelerIO {
   env?: Readonly<Record<string, string | undefined>>;
   fetchImpl?: typeof fetch;
+  /** Optional pricing table for peak-aware inline labeler prices. */
+  pricing?: Pricing;
 }
 
 export interface LabelTaskResult {
@@ -102,6 +104,7 @@ export async function labelTask(
       io.env ?? {},
       io.fetchImpl,
       policy.classifier,
+      io.pricing,
     );
     if (result.error === null && isLabel(result.label)) {
       return {

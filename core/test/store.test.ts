@@ -200,6 +200,29 @@ test("happy path projection accumulates cost, wall time and first pass", (t) => 
   assert.equal(store.listEvents({ types: ["dispatch.finished", "acceptance.finished"] }).length, 2);
 });
 
+test("older dispatch and acceptance payloads without new accounting fields still validate", (t) => {
+  const { store } = tempStore(t);
+  const taskId = uuid();
+
+  store.appendEvent(created(taskId));
+  store.appendEvent(routed(taskId, 1, "codex", null));
+  store.appendEvent(started(taskId, 1, "codex"));
+  store.appendEvent(finished(taskId, 1, 0.1, 100));
+  store.appendEvent(acceptance(taskId, 1, "accepted", 0.01, 10));
+
+  const events = store.getEvents(taskId);
+  const dispatchEvent = events.find((event) => event.type === "dispatch.finished");
+  assert.ok(dispatchEvent !== undefined && dispatchEvent.type === "dispatch.finished");
+  assert.equal(dispatchEvent.data.model_ms, undefined);
+  assert.equal(dispatchEvent.data.tool_ms, undefined);
+  assert.equal(dispatchEvent.data.pricing_period, undefined);
+
+  const acceptanceEvent = events.find((event) => event.type === "acceptance.finished");
+  assert.ok(acceptanceEvent !== undefined && acceptanceEvent.type === "acceptance.finished");
+  assert.equal(acceptanceEvent.data.reviewer_usage, undefined);
+  assert.equal(acceptanceEvent.data.self_accepted, undefined);
+});
+
 test("rejected round 1 then redispatch yields round 2 and first_pass 0", (t) => {
   const { store } = tempStore(t);
   const taskId = uuid();

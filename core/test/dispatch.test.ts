@@ -257,6 +257,8 @@ test("codex parser normalises usage, tool calls, session and completion", () => 
   assert.equal(parsed.final_text, CODEX_FINAL_TEXT);
   assert.deepEqual(parsed.usage_raw, CODEX_USAGE);
   assert.equal(parsed.model, null);
+  assert.equal(parsed.model_ms, null);
+  assert.equal(parsed.tool_ms, null);
 });
 
 test("dsh parser sums step usage and keeps cache-write in usage_raw", () => {
@@ -281,6 +283,32 @@ test("dsh parser sums step usage and keeps cache-write in usage_raw", () => {
   assert.equal(raw.steps.length, 2);
   assert.equal(raw.steps[0]?.["cacheWriteTokens"], 0);
   assert.equal(JSON.stringify(raw).includes("cacheWriteTokens"), true);
+  assert.equal(parsed.model_ms, null);
+  assert.equal(parsed.tool_ms, null);
+});
+
+test("codex parser splits wall time into model and tool time from item timestamps", () => {
+  const parser = createCodexParser();
+  for (const line of parserLines(fixture("codex-timed.jsonl"))) {
+    parser.onLine(JSON.parse(line), line);
+  }
+
+  const parsed = parser.result(5000);
+  assert.equal(parsed.tool_ms, 2000);
+  assert.equal(parsed.model_ms, 3000);
+  assert.equal((parsed.model_ms ?? 0) + (parsed.tool_ms ?? 0), 5000);
+});
+
+test("dsh parser splits step and tool time from timestamps", () => {
+  const parser = createDshParser();
+  for (const line of parserLines(fixture("dsh-timed.jsonl"))) {
+    parser.onLine(JSON.parse(line), line);
+  }
+
+  const parsed = parser.result(5000);
+  assert.equal(parsed.tool_ms, 1000);
+  assert.equal(parsed.model_ms, 3000);
+  assert.equal((parsed.model_ms ?? 0) + (parsed.tool_ms ?? 0), 4000);
 });
 
 test("runJsonlProcess passes non-JSON lines as null and captures stderr", async (t) => {
@@ -382,6 +410,9 @@ test("runDispatch codex success records events, cost and awaiting_acceptance", a
   assert.equal(finished.data.tool_calls, 1);
   assert.equal(finished.data.exit_code, 0);
   assert.equal(finished.data.target_session_id, "thread-codex-1");
+  assert.equal(finished.data.model_ms, null);
+  assert.equal(finished.data.tool_ms, null);
+  assert.equal(finished.data.pricing_period, "flat");
   const finishedData = finished.data as typeof finished.data & { cost_unknown: boolean };
   assert.equal(finishedData.cost_unknown, false);
 
@@ -417,6 +448,29 @@ test("runDispatch selects the dsh adapter and prices summed step usage", async (
   assert.ok(result.cost_usd > 0);
   assert.equal(result.target_session_id, "session-dsh-1");
   assert.equal(readFileSync(result.output_path ?? "", "utf8"), "Done: updated src/main.ts.");
+});
+
+test("runDispatch records a timing split that never exceeds wall time", async (t) => {
+  const h = harness(t);
+  const task = seedRoutedTask(h.store, "codex");
+  const calls: SpawnCall[] = [];
+
+  await runDispatch(
+    dispatchOptions(h, task, {
+      spawnImpl: fakeSpawn({ stdoutText: fixture("codex-timed.jsonl"), exitCode: 0 }, calls),
+    }),
+  );
+
+  const finished = h.store
+    .getEvents(task.task_id)
+    .find((event) => event.type === "dispatch.finished");
+  assert.ok(finished !== undefined && finished.type === "dispatch.finished");
+  assert.equal(typeof finished.data.model_ms, "number");
+  assert.equal(typeof finished.data.tool_ms, "number");
+  assert.ok(
+    (finished.data.model_ms ?? 0) + (finished.data.tool_ms ?? 0) <= finished.data.wall_ms,
+    `model ${String(finished.data.model_ms)} + tool ${String(finished.data.tool_ms)} > wall ${finished.data.wall_ms}`,
+  );
 });
 
 test("runDispatch maps a non-zero exit code to error", async (t) => {
@@ -834,6 +888,9 @@ test("done records a host round with zero usage and unknown cost", async (t) => 
   assert.equal(finished.data.exit_code, null);
   assert.equal(finished.data.target_session_id, null);
   assert.equal(finished.data.output_path, null);
+  assert.equal(finished.data.model_ms, null);
+  assert.equal(finished.data.tool_ms, null);
+  assert.equal(finished.data.pricing_period, "flat");
 
   const accepted = await runJson<{ verdict: string }>([
     "accept",

@@ -39,17 +39,113 @@ test("bundled templates validate with zero errors and zero warnings", () => {
     assert.equal(pricingResult.pricing.schema_version, 1);
     assert.ok(pricingResult.pricing.models["gpt-5.1-codex"] !== undefined);
     assert.deepEqual(pricingResult.pricing.models["deepseek-flash"], {
-      input_per_mtok: 0.3,
-      cached_input_per_mtok: 0.006,
-      output_per_mtok: 1.2,
+      input_per_mtok: 0.15,
+      cached_input_per_mtok: 0.003,
+      output_per_mtok: 0.6,
+      peak: "deepseek",
     });
     assert.deepEqual(pricingResult.pricing.models["deepseek-v4-pro"], {
-      input_per_mtok: 1.32,
-      cached_input_per_mtok: 0.044,
-      output_per_mtok: 3.96,
+      input_per_mtok: 0.66,
+      cached_input_per_mtok: 0.022,
+      output_per_mtok: 1.98,
+      peak: "deepseek",
+    });
+    assert.deepEqual(pricingResult.pricing.peak_schedules, {
+      deepseek: {
+        tz: "Asia/Shanghai",
+        windows: ["09:00-12:00", "14:00-18:00"],
+        weekdays_only: true,
+        factor: 2,
+      },
     });
     assert.equal(pricingResult.pricing.models["deepseek-v3.2"], undefined);
   }
+});
+
+test("pricing rejects an unknown peak schedule at the model's JSON pointer", () => {
+  const pricing = defaultPricing();
+  const flash = pricing.models["deepseek-flash"];
+  assert.ok(flash !== undefined);
+  pricing.models["deepseek-flash"] = { ...flash, peak: "not-a-schedule" };
+
+  const result = validatePricing(pricing);
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.errors.some((issue) => issue.path === "/models/deepseek-flash/peak"),
+    JSON.stringify(result.errors),
+  );
+});
+
+test("pricing rejects malformed, wrapped and zero-factor peak schedules", () => {
+  const badWindow = defaultPricing();
+  badWindow.peak_schedules = {
+    deepseek: {
+      tz: "Asia/Shanghai",
+      windows: ["9am-12pm"],
+      weekdays_only: true,
+      factor: 2,
+    },
+  };
+  const windowResult = validatePricing(badWindow);
+  assert.equal(windowResult.ok, false);
+  assert.ok(
+    windowResult.errors.some((issue) => issue.path === "/peak_schedules/deepseek/windows/0"),
+    JSON.stringify(windowResult.errors),
+  );
+
+  const wrapped = defaultPricing();
+  wrapped.peak_schedules = {
+    deepseek: {
+      tz: "Asia/Shanghai",
+      windows: ["23:00-01:00"],
+      weekdays_only: true,
+      factor: 2,
+    },
+  };
+  const wrappedResult = validatePricing(wrapped);
+  assert.equal(wrappedResult.ok, false);
+  assert.ok(
+    wrappedResult.errors.some(
+      (issue) =>
+        issue.path === "/peak_schedules/deepseek/windows/0" &&
+        issue.message.includes("wrap around midnight"),
+    ),
+    JSON.stringify(wrappedResult.errors),
+  );
+
+  const badFactor = defaultPricing();
+  badFactor.peak_schedules = {
+    deepseek: {
+      tz: "Asia/Shanghai",
+      windows: ["09:00-12:00"],
+      weekdays_only: true,
+      factor: 0,
+    },
+  };
+  const factorResult = validatePricing(badFactor);
+  assert.equal(factorResult.ok, false);
+  assert.ok(
+    factorResult.errors.some((issue) => issue.path === "/peak_schedules/deepseek/factor"),
+    JSON.stringify(factorResult.errors),
+  );
+});
+
+test("pricing rejects an invalid time zone", () => {
+  const pricing = defaultPricing();
+  pricing.peak_schedules = {
+    deepseek: {
+      tz: "Mars/Olympus",
+      windows: ["09:00-12:00"],
+      weekdays_only: true,
+      factor: 2,
+    },
+  };
+  const result = validatePricing(pricing);
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.errors.some((issue) => issue.path === "/peak_schedules/deepseek/tz"),
+    JSON.stringify(result.errors),
+  );
 });
 
 test("policyVersion ignores key order and changes with policy content", () => {
@@ -144,8 +240,9 @@ test("the bundled labeler is on by default with the DeepSeek price and thinking 
   assert.equal(policy.labeler.api_key_env, "DEEPSEEK_API_KEY");
   assert.equal(policy.labeler.timeout_ms, 5000);
   assert.deepEqual(policy.labeler.price, {
-    input_per_mtok: 0.3,
-    output_per_mtok: 1.2,
+    input_per_mtok: 0.15,
+    output_per_mtok: 0.6,
+    peak: "deepseek",
   });
   assert.deepEqual(policy.labeler.request_extra, { thinking: { type: "disabled" } });
   assert.deepEqual(policy.classifier.request_extra, { thinking: { type: "disabled" } });

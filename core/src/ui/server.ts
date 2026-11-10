@@ -27,6 +27,8 @@ import { buildReport, REPORT_DIMENSIONS } from "../report.js";
 import type { ReportBy } from "../report.js";
 import { openStore } from "../store.js";
 import type { Store } from "../store.js";
+import { readUpdateCache, updateView } from "../update-check.js";
+import { packageVersion } from "../version.js";
 import type { EvenerEvent, TaskRow } from "../types.js";
 import { openSeqReader } from "./seq.js";
 import { overview, roundViews, sessionViews, taskSummaries } from "./views.js";
@@ -345,11 +347,12 @@ export async function startUiServer(opts: UiServerOptions): Promise<UiServer> {
       const tasks = store.listTasks();
       const policy = loadPolicy(opts.home);
       const pricing = loadPricingForHome(opts.home);
+      const update = updateView(readUpdateCache(opts.home), packageVersion());
       sendJson(
         req,
         res,
         200,
-        overview(tasks, [], policy, pricingVersion(pricing), now, opts.home),
+        overview(tasks, [], policy, pricingVersion(pricing), now, update, opts.home),
       );
       return;
     }

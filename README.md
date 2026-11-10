@@ -71,6 +71,14 @@ installed plugin version. Claude Code auto-update is off by default for third-pa
 marketplaces; enable it under `/plugin` → Marketplaces → evener → Enable auto-update,
 or run `claude plugin update evener@evener` manually.
 
+`evener update-check [--offline] [--force]` only notifies: it makes at most one `GET
+https://registry.npmjs.org/evener/latest` (configurable via `update_check.registry`) every
+`update_check.interval_hours` (default 24) and caches the answer in
+`$EVENER_HOME/update-check.json`; it never downloads or applies an update. The SessionStart
+hook surfaces one line when a newer version is cached. Disable it with
+`update_check.enabled: false` or by setting `EVENER_NO_UPDATE_CHECK`, `NO_UPDATE_NOTIFIER`,
+`CI` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`.
+
 ## How a task flows
 
 ```

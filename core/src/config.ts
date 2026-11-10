@@ -256,6 +256,7 @@ const POLICY_KEYS = [
   "quality_weights",
   "style_rejection_suspect_ratio",
   "host",
+  "update_check",
 ] as const;
 
 /** Sections that must be present in a top-level policy file. */
@@ -344,6 +345,7 @@ const EXPERIMENT_KEYS = ["mode", "arms", "assignment", "alpha", "power"] as cons
 const QUALITY_WEIGHT_KEYS = ["first_pass", "final_pass", "feedback", "revert"] as const;
 const HOST_KEYS = ["claude_code"] as const;
 const CLAUDE_CODE_KEYS = ["confirm_before_dispatch", "route_subagent_tasks"] as const;
+const UPDATE_CHECK_KEYS = ["enabled", "interval_hours", "registry"] as const;
 const PRICING_KEYS = ["schema_version", "models", "peak_schedules"] as const;
 const REQUIRED_PRICING_KEYS = ["schema_version", "models"] as const;
 const MODEL_PRICE_KEYS = [
@@ -422,6 +424,24 @@ function checkBoolean(value: unknown, path: string, errors: ValidationIssue[]): 
     return null;
   }
   return value;
+}
+
+/** A non-empty string that parses as an absolute http(s) URL. */
+function checkHttpUrl(value: unknown, path: string, errors: ValidationIssue[]): string | null {
+  const text = checkString(value, path, errors);
+  if (text === null) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(text);
+  } catch {
+    errors.push({ path, message: "must be a valid http(s) URL" });
+    return null;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    errors.push({ path, message: "must be a valid http(s) URL" });
+    return null;
+  }
+  return text;
 }
 
 interface NumberOptions {
@@ -1049,6 +1069,21 @@ function validateHost(obj: Record<string, unknown>, errors: ValidationIssue[], w
   checkBoolean(claudeCode["route_subagent_tasks"], pointer(pointer(base, "claude_code"), "route_subagent_tasks"), errors);
 }
 
+function validateUpdateCheck(
+  obj: Record<string, unknown>,
+  errors: ValidationIssue[],
+  warnings: ValidationIssue[],
+): void {
+  const base = "/update_check";
+  warnUnknown(obj, UPDATE_CHECK_KEYS, base, warnings);
+  checkBoolean(obj["enabled"], pointer(base, "enabled"), errors);
+  checkNumber(obj["interval_hours"], pointer(base, "interval_hours"), errors, {
+    min: 0,
+    exclusiveMin: true,
+  });
+  checkHttpUrl(obj["registry"], pointer(base, "registry"), errors);
+}
+
 function validatePolicySections(merged: Record<string, unknown>, errors: ValidationIssue[], warnings: ValidationIssue[]): void {
   const schemaVersion = checkNumber(merged["schema_version"], "/schema_version", errors, { integer: true });
   if (schemaVersion !== null && schemaVersion !== 1) {
@@ -1087,6 +1122,8 @@ function validatePolicySections(merged: Record<string, unknown>, errors: Validat
   });
   const host = asObject(merged["host"], "/host", errors);
   if (host !== null) validateHost(host, errors, warnings);
+  const updateCheck = asObject(merged["update_check"], "/update_check", errors);
+  if (updateCheck !== null) validateUpdateCheck(updateCheck, errors, warnings);
 }
 
 function validatePolicyInternal(

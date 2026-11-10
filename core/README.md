@@ -47,6 +47,24 @@ on weekdays (public holidays are not modelled). Every `dispatch.finished` record
 prices accept the same `peak: <schedule>` key. `pricingPeriod(schedule, at)` is the exported
 classifier used by both the dispatcher and those inline-price call sites.
 
+## Update check
+
+`evener update-check [--offline] [--force]` is notify-only: it compares the running
+`packageVersion()` with the registry's `latest` and never downloads or applies an
+update. A real check sends exactly one `GET <registry>/evener/latest` with
+`Accept: application/json` (8 s timeout) and no task data, then caches
+`{checked_at, current, latest, error}` in `$EVENER_HOME/update-check.json`. The
+default registry is `https://registry.npmjs.org`; a successful answer is reused for
+`update_check.interval_hours` (default 24) unless `--force` is given. `--offline`
+reads the cache only, and network/parse failures are recorded in `error` while
+keeping the previous `latest`; the command still exits 0.
+
+Turn it off with `update_check.enabled: false`, or by setting any of
+`EVENER_NO_UPDATE_CHECK`, `NO_UPDATE_NOTIFIER`, `CI`,
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` to a non-empty value. The Claude Code
+SessionStart hook uses `--offline` for its one-line notice and refreshes the cache
+in the background only when those variables are unset.
+
 ## Web panel
 
 `evener ui` starts a local, read-only dashboard over the same SQLite store and
@@ -62,7 +80,7 @@ node core/dist/src/cli.js ui --port 7331 --no-open
 | Route | Returns |
 |---|---|
 | `GET /` | `core/ui/index.html`, with `Cache-Control: no-store` |
-| `GET /api/overview` | `{now, home, policy_name, policy_version, experiment_mode, arms: string[], pricing_version, open_tasks, tasks_7d, accepted_7d, cost_7d_usd}` |
+| `GET /api/overview` | `{now, home, policy_name, policy_version, experiment_mode, arms: string[], pricing_version, open_tasks, tasks_7d, accepted_7d, cost_7d_usd, update: {current, latest: string\|null, available: bool, checked_at: string\|null}}` |
 | `GET /api/tasks?state=open\|closed\|all&since=&limit=&host_session=` | `{tasks: TaskSummary[]}` newest first; `state` default `open`, `limit` default 50 |
 | `GET /api/task/:id` | `{task: TaskRow, rounds: RoundView[], events: EvenerEvent[]}` |
 | `GET /api/task/:id/output?round=n&stream=out\|stderr&tail=BYTES` | `text/plain` body of `runs/<task>/<round>.out.md` (or `.stderr`); last `tail` bytes when given; 404 when absent |
@@ -83,6 +101,7 @@ core; the page only renders API values.
 | `policy show [--file]` | Print the effective policy as JSON |
 | `policy hash [--file]` | Print the canonical policy version |
 | `ui [--port N] [--no-open]` | Serve the local read-only web panel |
+| `update-check [--offline] [--force]` | Notify-only version check against the npm registry |
 
 All commands print one JSON object on stdout. Errors print
 `{error: {code, message}}` and exit non-zero.

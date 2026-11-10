@@ -187,6 +187,12 @@ interface OverviewBody {
   tasks_7d: number;
   accepted_7d: number;
   cost_7d_usd: number;
+  update: {
+    current: string;
+    latest: string | null;
+    available: boolean;
+    checked_at: string | null;
+  };
 }
 
 interface TaskSummaryBody {
@@ -295,6 +301,28 @@ test("ui server serves the read-only JSON routes", async (t) => {
   assert.equal(overviewBody.tasks_7d, 1);
   assert.equal(overviewBody.accepted_7d, 1);
   assert.equal(overviewBody.cost_7d_usd > 0, true);
+  assert.equal(overviewBody.update.latest, null);
+  assert.equal(overviewBody.update.available, false);
+  assert.equal(overviewBody.update.checked_at, null);
+
+  const cachedAt = new Date().toISOString();
+  writeFileSync(
+    join(home, "update-check.json"),
+    JSON.stringify({
+      checked_at: cachedAt,
+      current: "0.1.0",
+      latest: "9.9.9",
+      error: null,
+    }),
+    "utf8",
+  );
+  const updatedOverviewResponse = await fetch(new URL("/api/overview", server.url));
+  assert.equal(updatedOverviewResponse.status, 200);
+  const updatedOverview = (await updatedOverviewResponse.json()) as unknown as OverviewBody;
+  assert.equal(updatedOverview.update.latest, "9.9.9");
+  assert.equal(updatedOverview.update.available, true);
+  assert.equal(updatedOverview.update.checked_at, cachedAt);
+  assert.ok(updatedOverview.update.current.length > 0);
 
   const tasksResponse = await fetch(new URL("/api/tasks?state=all", server.url));
   assert.equal(tasksResponse.status, 200);

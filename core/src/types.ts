@@ -474,6 +474,14 @@ export interface HostConfig {
   claude_code: ClaudeCodeHostConfig;
 }
 
+export interface UpdateCheckConfig {
+  enabled: boolean;
+  /** Minimum hours between successful registry checks. */
+  interval_hours: number;
+  /** Base URL of the npm registry; the version URL is `<registry>/evener/latest`. */
+  registry: string;
+}
+
 export interface Policy {
   schema_version: 1;
   policy_name: string;
@@ -491,6 +499,7 @@ export interface Policy {
   quality_weights: QualityWeights;
   style_rejection_suspect_ratio: number;
   host: HostConfig;
+  update_check: UpdateCheckConfig;
 }
 
 /**

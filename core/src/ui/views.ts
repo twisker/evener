@@ -8,6 +8,7 @@
 
 import { policyVersion } from "../config.js";
 import { roundTarget } from "../report.js";
+import type { UpdateView } from "../update-check.js";
 import {
   DECIDED_BY_VALUES,
   PRICING_PERIODS,
@@ -504,6 +505,7 @@ export interface Overview {
   tasks_7d: number;
   accepted_7d: number;
   cost_7d_usd: number;
+  update: UpdateView;
 }
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -514,6 +516,7 @@ export function overview(
   policy: Policy,
   pricingVersionValue: string,
   now: Date,
+  update: UpdateView,
   home = "",
 ): Overview {
   void events;
@@ -541,5 +544,6 @@ export function overview(
     tasks_7d: recent.length,
     accepted_7d: recent.filter((task) => task.outcome === "accepted").length,
     cost_7d_usd: recent.reduce((sum, task) => sum + task.total_cost_usd, 0),
+    update,
   };
 }

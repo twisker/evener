@@ -545,7 +545,12 @@ test("overview counts the last seven days and open tasks", () => {
     }),
   ];
 
-  const result = overview(tasks, [], policy, "pricing-1", now, "/tmp/evener");
+  const result = overview(tasks, [], policy, "pricing-1", now, {
+    current: "0.1.0",
+    latest: "0.2.0",
+    available: true,
+    checked_at: "2026-11-09T11:00:00.000Z",
+  }, "/tmp/evener");
   assert.equal(result.now, now.toISOString());
   assert.equal(result.home, "/tmp/evener");
   assert.equal(result.policy_name, policy.policy_name);
@@ -557,4 +562,10 @@ test("overview counts the last seven days and open tasks", () => {
   assert.equal(result.tasks_7d, 2);
   assert.equal(result.accepted_7d, 1);
   assert.ok(Math.abs(result.cost_7d_usd - 0.6) < 1e-9);
+  assert.deepEqual(result.update, {
+    current: "0.1.0",
+    latest: "0.2.0",
+    available: true,
+    checked_at: "2026-11-09T11:00:00.000Z",
+  });
 });

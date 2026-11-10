@@ -110,3 +110,8 @@ host:
   claude_code:
     confirm_before_dispatch: false
     route_subagent_tasks: true
+
+update_check:                       # D23 (2026-11-10): notify only, never apply
+  enabled: true
+  interval_hours: 24
+  registry: https://registry.npmjs.org

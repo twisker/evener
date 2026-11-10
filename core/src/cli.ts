@@ -15,6 +15,7 @@ import { register as registerDispatch } from "./commands/dispatch.js";
 import { register as registerLifecycle } from "./commands/lifecycle.js";
 import { register as registerReport } from "./commands/report.js";
 import { register as registerUi } from "./commands/ui.js";
+import { register as registerUpdateCheck } from "./commands/update-check.js";
 
 export type { CliIO, CliSink, CommandHandler, CommandRegistry } from "./commands/types.js";
 export { CommandError as CliError } from "./commands/types.js";
@@ -120,6 +121,7 @@ registerDispatch(commands);
 registerLifecycle(commands);
 registerReport(commands);
 registerUi(commands);
+registerUpdateCheck(commands);
 
 /**
  * `report` is implemented by a later task. Register a placeholder when the
@@ -152,6 +154,7 @@ const commandUsages: Readonly<Record<string, string>> = {
   sweep: "sweep --host-session S",
   report: "report [--since 14d|YYYY-MM-DD] [--by label] [--format md|json] [--out FILE]",
   ui: "ui [--port N] [--no-open]",
+  "update-check": "update-check [--offline] [--force]",
   version: "version",
   help: "help",
 };
@@ -235,7 +238,8 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
 
   try {
     const output = await handler(ctx, commandArgs);
-    if (!globals.options.quiet && output !== undefined) print(output);
+    // `update-check --quiet` still prints: the result is the whole point.
+    if ((!globals.options.quiet || command === "update-check") && output !== undefined) print(output);
     return 0;
   } catch (err) {
     if (err instanceof CommandError) {

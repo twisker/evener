@@ -122,16 +122,65 @@ esac
 
 printf 'adapter selftest: checking SessionStart hook\n'
 tmp_home=$(mktemp -d)
-trap 'rm -rf "$tmp_home" "$tmp_plugin"' EXIT HUP INT TERM
+tmp_update_home=$(mktemp -d)
+tmp_ci_home=$(mktemp -d)
+trap 'rm -rf "$tmp_home" "$tmp_plugin" "$tmp_update_home" "$tmp_ci_home"' EXIT HUP INT TERM
 
 session_start_output=$(
   printf '%s\n' '{"session_id":"abc"}' \
-    | EVENER_HOME="$tmp_home" sh "$adapter_dir/scripts/session-start.sh"
+    | EVENER_HOME="$tmp_home" EVENER_NO_UPDATE_CHECK=1 sh "$adapter_dir/scripts/session-start.sh"
 ) || fail "session-start.sh failed with valid input"
 case "$session_start_output" in
   *abc*) ;;
   *) fail "session-start.sh did not include the session id" ;;
 esac
+
+# The cache is fresh, so the hook's background refresh (no CI here) is a no-op
+# and does not touch the network; the foreground --offline still sees latest.
+node -e '
+const fs = require("node:fs");
+fs.writeFileSync(process.argv[1], JSON.stringify({
+  checked_at: new Date().toISOString(),
+  current: "0.1.0",
+  latest: "9.9.9",
+  error: null,
+}) + "\n");
+' "$tmp_update_home/update-check.json"
+update_hook_output=$(
+  printf '%s\n' '{"session_id":"abc"}' \
+    | EVENER_HOME="$tmp_update_home" \
+      EVENER_BIN="$repo_root/core/dist/src/cli.js" \
+      sh "$adapter_dir/scripts/session-start.sh"
+) || fail "session-start.sh failed with a cached update"
+# Let the detached background check observe the fresh cache before the temp
+# directory is removed; it must not go to the network or rewrite the cache.
+sleep 1
+case "$update_hook_output" in
+  *"is available"*) ;;
+  *) fail "session-start.sh did not surface the cached update: $update_hook_output" ;;
+esac
+printf '%s' "$update_hook_output" | node -e '
+let raw = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { raw += chunk; });
+process.stdin.on("end", () => {
+  try {
+    JSON.parse(raw);
+  } catch {
+    process.exit(1);
+  }
+});
+' || fail "session-start.sh update output is not valid JSON"
+
+printf '%s\n' '{"session_id":"abc"}' \
+  | EVENER_HOME="$tmp_ci_home" \
+    EVENER_BIN="$repo_root/core/dist/src/cli.js" \
+    CI=1 \
+    sh "$adapter_dir/scripts/session-start.sh" >/dev/null \
+  || fail "session-start.sh failed with CI=1"
+sleep 1
+[ ! -f "$tmp_ci_home/update-check.json" ] \
+  || fail "session-start.sh spawned the update check with CI=1"
 
 printf 'adapter selftest: checking sweep hook\n'
 

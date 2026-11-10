@@ -311,6 +311,11 @@ host:
   claude_code:
     confirm_before_dispatch: false
     route_subagent_tasks: true
+
+update_check:                       # D23 (2026-11-10): notify only, never apply
+  enabled: true
+  interval_hours: 24
+  registry: https://registry.npmjs.org
 ```
 
 `policy_version` = first 12 hex chars of sha256 over the canonical JSON (recursively sorted keys) of the **effective** policy, i.e. after default filling and, under an experiment, after merging the arm file over the top-level file. The hash therefore identifies exactly what routed the task.
@@ -422,11 +427,12 @@ Per-session accounting (which host session spent what, split into delegated cost
 - `skills/evener/SKILL.md`: triggers when the host is about to delegate a self-contained coding sub-task or the user asks to route/delegate/"用 evener". Procedure: write the sub-task description to a temp file → `evener task create` → `evener decide` → if `host`, do it in-session; else write the full prompt file → `evener dispatch` → host performs acceptance (run tests/lint/build it knows, read the output file, check scope) → `evener accept` → `evener next` → loop or `evener close`. Ask for 👍/👎 at the end only if `host.claude_code.confirm_before_dispatch` is true (configurable). Skill text includes the exact JSON fields returned by each command.
 - `hooks/hooks.json`: `Stop` and `SubagentStop` → `scripts/sweep.sh` (reads `session_id` from stdin JSON, runs `evener sweep --host-session <id>`; never blocks, exit 0).
 - `commands/evener-report.md`: runs `evener report --format md` and shows it.
-- Installation: documented via `claude --plugin-dir adapters/claude-code` for local use and a `marketplace.json` for publishing. `evener` must be on PATH (`npm i -g evener` or `npx evener`); the skill uses `npx -y evener` when the bare command is missing (configurable through `EVENER_BIN`).
+- Installation: documented via `claude --plugin-dir adapters/claude-code` for local use and a `marketplace.json` for publishing. The core is published on npm as `evener` (D16, decided 2026-11-10) and the plugin declares it as a lockfile-pinned dependency (`adapters/claude-code/package.json` + `package-lock.json`), so Claude Code installs the matching core into the cached plugin at install and at every update (D23). `bin/evener` resolves, in order: `$EVENER_BIN`, the monorepo build `../../core/dist/src/cli.js`, `<plugin root>/node_modules/evener/dist/src/cli.js`, a global `evener`, `npx -y evener`. The three version strings (`core/package.json`, `adapters/claude-code/package.json` incl. its `evener` dependency, `plugin.json`) are always equal; `scripts/release.sh <version>` is the only way they change.
+- Updates: Evener never applies updates itself. Claude Code updates the plugin when `plugin.json` `version` changes (auto-update is off by default for third-party marketplaces; `claude plugin update evener@evener` is the manual path). `evener update-check` compares the running version with the registry's `latest` at most once per `update_check.interval_hours`, caches the answer in `$EVENER_HOME/update-check.json` `{checked_at, current, latest, error}`, and the SessionStart hook surfaces one line of `additionalContext` when a newer version exists. No network when `update_check.enabled: false` or any of `EVENER_NO_UPDATE_CHECK`, `NO_UPDATE_NOTIFIER`, `CI`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set.
 
 ## 11. CLI contract summary
 
-All commands print one JSON object on stdout (or markdown for `report --format md`) and exit 0; errors print `{error: {code, message}}` and exit 1 (2 for validation). Global flags: `--home DIR` (= `$EVENER_HOME`), `--json` (default), `--quiet`.
+All commands print one JSON object on stdout (or markdown for `report --format md`) and exit 0; errors print `{error: {code, message}}` and exit 1 (2 for validation). Global flags: `--home DIR` (= `$EVENER_HOME`), `--json` (default), `--quiet`, `--version` (prints the bare version string from `core/package.json` and exits 0).
 
 | Command | Output keys |
 |---|---|
@@ -448,6 +454,7 @@ All commands print one JSON object on stdout (or markdown for `report --format m
 | `apply <n> [--arm A] [--report FILE]` | `{field, from, to, policy_version}` |
 | `export --format jsonl|otel [--since]` | writes to stdout |
 | `rebuild` | `{tasks}` rebuilt from events |
+| `update-check [--offline] [--force]` | `{current, latest: string|null, available: bool, checked_at: string|null, skipped: null|"disabled"|"env"|"fresh"|"offline", error: string|null}`; `--offline` reads the cache only, `--force` ignores the interval; network failures are recorded in `error` and exit 0 |
 | `ui [--port N] [--no-open]` | prints `{url, home, pid}` then serves the read-only web panel (§13) until SIGINT |
 
 ## 12. Non-goals restated
@@ -469,7 +476,7 @@ evener ui [--port N] [--no-open]
 
 | Route | Returns |
 |---|---|
-| `GET /api/overview` | `{now, home, policy_name, policy_version, experiment_mode, arms: string[], pricing_version, open_tasks, tasks_7d, accepted_7d, cost_7d_usd}` |
+| `GET /api/overview` | `{now, home, policy_name, policy_version, experiment_mode, arms: string[], pricing_version, open_tasks, tasks_7d, accepted_7d, cost_7d_usd, update: {current, latest: string|null, available: bool, checked_at: string|null}}` (`update` is read from the `update-check.json` cache; the server never calls the registry) |
 | `GET /api/tasks?state=open\|closed\|all&since=&limit=&host_session=` | `{tasks: TaskSummary[]}` newest first; `state` default `open`, `limit` default 50 |
 | `GET /api/task/:id` | `{task: TaskRow, rounds: RoundView[], events: EvenerEvent[]}` |
 | `GET /api/task/:id/output?round=n&stream=out\|stderr&tail=BYTES` | `text/plain` body of `runs/<task>/<round>.out.md` (or `.stderr`); last `tail` bytes when given; 404 when absent |

@@ -106,9 +106,23 @@ case "$help_output" in
   *) fail "bin/evener help does not print \"commands\"" ;;
 esac
 
+printf 'adapter selftest: checking pinned core resolution\n'
+tmp_plugin=$(mktemp -d)
+fake_plugin="$tmp_plugin/evener-plugin"
+fake_cli="$fake_plugin/node_modules/evener/dist/src/cli.js"
+mkdir -p "$fake_plugin"
+cp -R "$adapter_dir/." "$fake_plugin/"
+mkdir -p "$(dirname -- "$fake_cli")"
+printf '%s\n' 'console.log(JSON.stringify({ fake: true }));' > "$fake_cli"
+fake_output=$(EVENER_BIN= "$fake_plugin/bin/evener") || fail "bin/evener failed with a fake node_modules core"
+case "$fake_output" in
+  *'"fake":true'*) ;;
+  *) fail "bin/evener did not run the pinned node_modules core" ;;
+esac
+
 printf 'adapter selftest: checking SessionStart hook\n'
 tmp_home=$(mktemp -d)
-trap 'rm -rf "$tmp_home"' EXIT HUP INT TERM
+trap 'rm -rf "$tmp_home" "$tmp_plugin"' EXIT HUP INT TERM
 
 session_start_output=$(
   printf '%s\n' '{"session_id":"abc"}' \

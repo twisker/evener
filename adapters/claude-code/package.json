@@ -6,5 +6,8 @@
   "type": "module",
   "scripts": {
     "test": "sh ./scripts/selftest.sh"
+  },
+  "dependencies": {
+    "evener": "0.1.0"
   }
 }

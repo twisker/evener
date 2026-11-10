@@ -8,9 +8,10 @@ hooks, and an `evener` launcher that puts the core CLI on the plugin's Bash PATH
 
 - Claude Code with plugin support.
 - Node.js >= 22.13 (the core CLI uses `node:sqlite`).
-- The Evener core package. In this checkout run `npm run build` first; the launcher
-  also uses a globally installed `evener` or `npx -y evener` when the monorepo
-  build is absent.
+- The Evener core package. The plugin pins it as an exact npm dependency, so Claude
+  Code installs the matching core into the cached plugin. In a local checkout run
+  `npm run build` first; outside a monorepo the launcher also accepts `$EVENER_BIN`,
+  a global `evener`, or `npx -y evener@<plugin version>`.
 
 ## Install
 
@@ -37,6 +38,21 @@ claude --plugin-dir adapters/claude-code
 The marketplace definition lives in `.claude-plugin/marketplace.json` at the
 repository root; the plugin manifest is `adapters/claude-code/.claude-plugin/plugin.json`.
 
+The plugin brings its own pinned core: `package.json` depends on the exact `evener`
+version, and Claude Code installs that dependency from npm into the cached plugin at
+install and at every plugin update (registry packages only, `--ignore-scripts`).
+`bin/evener` prefers that copy over a global `evener` or `npx`.
+
+### Updating
+
+Claude Code updates the plugin when `plugin.json` `version` changes. Auto-update is
+**off by default for third-party marketplaces**. Enable it once with `/plugin` →
+Marketplaces → evener → Enable auto-update, or update manually:
+
+```sh
+claude plugin update evener@evener
+```
+
 ## Use
 
 The skill is `/evener:evener` (also triggered by delegation language such as
@@ -61,8 +77,10 @@ Claude can call `evener` by bare name. `bin/evener` resolves, in order:
 1. `$EVENER_BIN` when set (for example `EVENER_BIN=/path/to/core/dist/src/cli.js`
    only works if that file is executable; otherwise point it at an `evener` wrapper).
 2. `<plugin root>/../../core/dist/src/cli.js` via `node` (monorepo checkout).
-3. A globally installed `evener` found with `command -v`, unless it is this launcher.
-4. `npx -y evener`.
+3. `<plugin root>/node_modules/evener/dist/src/cli.js` via `node` (the pinned core
+   installed from npm by Claude Code).
+4. A globally installed `evener` found with `command -v`, unless it is this launcher.
+5. `npx -y evener@<plugin version>` (or `npx -y evener` when the version is unreadable).
 
 ## Configuration
 
@@ -133,7 +151,9 @@ claude plugin validate adapters/claude-code
 claude --plugin-dir adapters/claude-code
 ```
 
-`npm test` from the repository root runs both the core suite and this adapter's
-self-test (`scripts/selftest.sh`). The self-test parses the manifests, checks the
-skill frontmatter, runs `bin/evener help`, exercises `scripts/session-start.sh` and
-`scripts/sweep.sh`, and runs `claude plugin validate` when `claude` is on PATH.
+`npm test` from the repository root runs the version check, the core suite and this
+adapter's self-test (`scripts/selftest.sh`). The self-test parses the manifests,
+checks the skill frontmatter, runs `bin/evener help`, checks that a copy outside the
+monorepo resolves its own `node_modules/evener`, exercises
+`scripts/session-start.sh` and `scripts/sweep.sh`, and runs `claude plugin validate`
+when `claude` is on PATH.

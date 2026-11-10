@@ -4,14 +4,18 @@
 # Resolution order:
 #   1. $EVENER_BIN
 #   2. <plugin root>/../../core/dist/src/cli.js (monorepo checkout)
-#   3. a globally installed `evener` that is not this script
-#   4. npx -y evener
+#   3. <plugin root>/node_modules/evener/dist/src/cli.js (the plugin's pinned core,
+#      installed from npm by Claude Code from package-lock.json)
+#   4. a globally installed `evener` that is not this script
+#   5. npx -y evener@<plugin version> (npx -y evener when the version is unreadable)
 set -u
 
 self_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 self_path="$self_dir/$(basename -- "$0")"
 plugin_root=$(CDPATH= cd -- "$self_dir/.." && pwd)
 core_cli="$plugin_root/../../core/dist/src/cli.js"
+plugin_cli="$plugin_root/node_modules/evener/dist/src/cli.js"
+plugin_json="$plugin_root/.claude-plugin/plugin.json"
 
 if [ -n "${EVENER_BIN:-}" ]; then
   exec "$EVENER_BIN" "$@"
@@ -19,6 +23,10 @@ fi
 
 if [ -f "$core_cli" ]; then
   exec node "$core_cli" "$@"
+fi
+
+if [ -f "$plugin_cli" ]; then
+  exec node "$plugin_cli" "$@"
 fi
 
 if global_evener=$(command -v evener 2>/dev/null); then
@@ -35,4 +43,22 @@ if global_evener=$(command -v evener 2>/dev/null); then
   fi
 fi
 
-exec npx -y evener "$@"
+plugin_version=$(
+  node -p '(() => {
+    try {
+      const value = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).version;
+      return typeof value === "string" ? value : "";
+    } catch {
+      return "";
+    }
+  })()' "$plugin_json" 2>/dev/null
+) || plugin_version=
+
+case "$plugin_version" in
+  "" | *[!0-9A-Za-z.+-]*)
+    exec npx -y evener "$@"
+    ;;
+  *)
+    exec npx -y "evener@$plugin_version" "$@"
+    ;;
+esac

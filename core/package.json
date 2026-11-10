@@ -3,6 +3,24 @@
   "version": "0.1.0",
   "description": "Route delegated coding tasks to the most cost-effective target harness",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/twisker/evener.git",
+    "directory": "core"
+  },
+  "homepage": "https://github.com/twisker/evener#readme",
+  "keywords": [
+    "evener",
+    "ai",
+    "coding-agent",
+    "routing",
+    "cost",
+    "claude-code",
+    "codex",
+    "dsh",
+    "llm"
+  ],
   "bin": {
     "evener": "./dist/src/cli.js"
   },
@@ -10,13 +28,16 @@
     "node": ">=22.13"
   },
   "files": [
-    "dist",
+    "dist/src",
     "templates",
-    "ui"
+    "ui",
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test dist/test/"
+    "test": "npm run build && node --test dist/test/",
+    "prepublishOnly": "npm run build"
   },
   "exports": {
     ".": {

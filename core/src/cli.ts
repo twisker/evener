@@ -3,6 +3,7 @@ import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConfigError, resolveHome } from "./config.js";
+import { packageVersion } from "./version.js";
 import { openStore } from "./store.js";
 import type { Store } from "./store.js";
 import { CommandError } from "./commands/types.js";
@@ -50,6 +51,7 @@ interface GlobalOptions {
   home?: string;
   format: OutputFormat;
   quiet: boolean;
+  version: boolean;
 }
 
 interface GlobalParseResult {
@@ -59,7 +61,7 @@ interface GlobalParseResult {
 }
 
 function extractGlobalOptions(argv: string[]): GlobalParseResult {
-  const options: GlobalOptions = { format: "json", quiet: false };
+  const options: GlobalOptions = { format: "json", quiet: false, version: false };
   const rest: string[] = [];
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -90,6 +92,8 @@ function extractGlobalOptions(argv: string[]): GlobalParseResult {
       options.format = value;
     } else if (arg === "--quiet" || arg === "-q") {
       options.quiet = true;
+    } else if (arg === "--version") {
+      options.version = true;
     } else if (arg === "--json") {
       options.format = "json";
     } else {
@@ -148,8 +152,11 @@ const commandUsages: Readonly<Record<string, string>> = {
   sweep: "sweep --host-session S",
   report: "report [--since 14d|YYYY-MM-DD] [--by label] [--format md|json] [--out FILE]",
   ui: "ui [--port N] [--no-open]",
+  version: "version",
   help: "help",
 };
+
+commands["version"] = async () => ({ version: packageVersion() });
 
 commands["help"] = async () => ({
   commands: Object.keys(commands)
@@ -167,6 +174,18 @@ commands["help"] = async () => ({
  */
 export async function runCli(argv: string[], io: CliIO): Promise<number> {
   const globals = extractGlobalOptions(argv);
+
+  if (globals.options.version) {
+    try {
+      emitText(io.stdout, `${packageVersion()}\n`);
+      return 0;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      emitText(io.stdout, renderOutput(errorPayload("version_unavailable", message), "json"));
+      return 1;
+    }
+  }
+
   const format = globals.options.format;
   const home = resolveHome({ home: globals.options.home, env: io.env });
   const policyPath = join(home, "policy.yaml");

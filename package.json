@@ -9,7 +9,8 @@
   ],
   "scripts": {
     "build": "npm run build -w core",
-    "test": "npm run test -w core && npm run test:adapter",
+    "check-versions": "sh scripts/check-versions.sh",
+    "test": "npm run check-versions && npm run test -w core && npm run test:adapter",
     "test:adapter": "npm test -w adapters/claude-code"
   },
   "devDependencies": {

@@ -42,6 +42,13 @@ Requirements: Node ≥ 22.13 (for `node:sqlite`), plus the targets you want to r
 (`codex` on PATH with `OPENAI_API_KEY`, and/or `DEEPSEEK_API_KEY` for `npx @deepseek-ai/dsh`).
 
 ```sh
+npm install -g evener
+evener init                             # creates ~/.evener/{policy.yaml,pricing.yaml,evener.sqlite}
+```
+
+From a source checkout:
+
+```sh
 git clone https://github.com/twisker/evener && cd evener
 npm install && npm run build && npm test
 node core/dist/src/cli.js init          # creates ~/.evener/{policy.yaml,pricing.yaml,evener.sqlite}
@@ -59,6 +66,10 @@ claude plugin install evener@evener
 The plugin puts `evener` on the Bash PATH of the session, adds the `/evener:evener` skill, the
 `/evener:evener-report` and `/evener:evener-feedback` commands, a SessionStart hook that tells Claude
 the session id, and Stop / SubagentStop hooks that close orphaned tasks as `abandoned`.
+The plugin pins its own `evener` core as an exact npm dependency, so the CLI matches the
+installed plugin version. Claude Code auto-update is off by default for third-party
+marketplaces; enable it under `/plugin` → Marketplaces → evener → Enable auto-update,
+or run `claude plugin update evener@evener` manually.
 
 ## How a task flows
 
@@ -115,6 +126,13 @@ Weekly report via cron:
 ```
 0 9 * * 1  cd ~ && evener report --since 7d --format md --out ~/.evener/reports/weekly-$(date +\%F).md
 ```
+
+## Release
+
+Maintainers only, from a clean `main` tree: `scripts/release.sh 0.1.0` bumps the four version locations, runs build/tests, publishes `core` to npm, regenerates `adapters/claude-code/package-lock.json`, commits `Release v0.1.0`, and tags it.
+`--dry-run` runs the checks and `npm publish --dry-run`, then stops before the lockfile, commit and tag.
+Push manually with `git push --follow-tags`; the script never pushes.
+Plugin updates follow the version bump: auto-update is off by default for third-party marketplaces (`/plugin` → Marketplaces → evener → Enable auto-update), or run `claude plugin update evener@evener`; the plugin brings its own pinned core.
 
 ## License
 
